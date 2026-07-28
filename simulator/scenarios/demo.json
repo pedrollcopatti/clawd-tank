@@ -1,9 +1,0 @@
-[
-    {"time_ms": 0,    "event": "connect"},
-    {"time_ms": 500,  "event": "notify", "project": "clawd-tank",     "message": "Waiting for input"},
-    {"time_ms": 1500, "event": "notify", "project": "my-api",         "message": "Running tests..."},
-    {"time_ms": 3000, "event": "notify", "project": "web-app",        "message": "Task completed"},
-    {"time_ms": 5000, "event": "dismiss", "index": 0},
-    {"time_ms": 7000, "event": "clear"},
-    {"time_ms": 8000, "event": "disconnect"}
-]

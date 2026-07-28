@@ -14,27 +14,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Fetch LVGL (managed component not in git)
-        run: |
-          mkdir -p firmware/managed_components
-          git clone --depth 1 https://github.com/lvgl/lvgl.git firmware/managed_components/lvgl__lvgl
-          cd firmware/managed_components/lvgl__lvgl
-          git fetch --depth 1 origin 85aa60d18b3d5e5588d7b247abf90198f07c8a63
-          git checkout 85aa60d18b3d5e5588d7b247abf90198f07c8a63
-
-      - name: Build static simulator
-        run: |
-          cd simulator
-          cmake -B build-static -DSTATIC_SDL2=ON
-          cmake --build build-static
-          # Verify no SDL2 dynamic dependency
-          otool -L build-static/clawd-tank-sim > /tmp/otool-out.txt
-          if grep -qi sdl /tmp/otool-out.txt; then
-            echo "ERROR: SDL2 dynamic dependency found"
-            cat /tmp/otool-out.txt
-            exit 1
-          fi
-
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
@@ -45,18 +24,15 @@ jobs:
           pip install -r requirements.txt
           pip install py2app
 
-# The app icon is the committed host/AppIcon.icns, which setup.py already
-# declares as "iconfile". CI used to regenerate it here by sips-upscaling a
-# 16x16 status bar PNG to 512x512, which produced a blurry icon from art that
-# was never meant for the Dock.
+      - name: Run tests
+        working-directory: host
+        run: python -m pytest -q
 
+      # The app icon is the committed host/AppIcon.icns, which setup.py declares
+      # as "iconfile".
       - name: Build .app with py2app
         working-directory: host
         run: python setup.py py2app
-
-      - name: Bundle simulator into app
-        run: |
-          cp simulator/build-static/clawd-tank-sim "host/dist/Clawd Tank.app/Contents/MacOS/"
 
       - name: Create DMG
         working-directory: host

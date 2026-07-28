@@ -14,27 +14,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Fetch LVGL (managed component not in git)
-        run: |
-          mkdir -p firmware/managed_components
-          git clone --depth 1 https://github.com/lvgl/lvgl.git firmware/managed_components/lvgl__lvgl
-          cd firmware/managed_components/lvgl__lvgl
-          git fetch --depth 1 origin 85aa60d18b3d5e5588d7b247abf90198f07c8a63
-          git checkout 85aa60d18b3d5e5588d7b247abf90198f07c8a63
-
-      - name: Build simulator
-        run: |
-          cd simulator
-          cmake -B build -DSTATIC_SDL2=ON
-          cmake --build build
-          # Verify no SDL2 dynamic dependency
-          otool -L build/clawd-tank-sim > /tmp/otool-out.txt
-          if grep -qi sdl /tmp/otool-out.txt; then
-            echo "ERROR: SDL2 dynamic dependency found"
-            cat /tmp/otool-out.txt
-            exit 1
-          fi
-
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -46,14 +25,15 @@ jobs:
           pip install -r requirements.txt
           pip install py2app
 
+      - name: Run tests
+        run: |
+          cd host
+          python -m pytest -q
+
       - name: Build menu bar app
         run: |
           cd host
           python setup.py py2app
-
-      - name: Bundle simulator into app
-        run: |
-          cp simulator/build/clawd-tank-sim "host/dist/Clawd Tank.app/Contents/MacOS/"
 
       - name: Create release zip
         run: |

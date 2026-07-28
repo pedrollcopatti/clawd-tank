@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Clawd Tank is now a menu bar app, not a hardware display.** The status bar
+  icon reflects what your Claude Code sessions are doing — sleeping, thinking,
+  working, waiting on you, or errored — and a left-click opens a popover listing
+  every live session with its project, current tool, elapsed time and subagent
+  count. Right-click still opens the settings menu.
+- The title beside the icon shows a session count only when it says something:
+  `3` for three sessions, `2!` when two are blocked on you, nothing for one.
+- Session Timeout is persisted in preferences. It used to be read back from
+  device config, so the menu showed 5 minutes while the daemon used 10.
+- Status bar icons are rendered at 44x44 and in colour. They were 16x16
+  template images, which macOS upscaled 2.5x on Retina (hence the softness) and
+  drew from alpha alone (hence the featureless blob).
+
+### Removed
+
+- **The ESP32-C6 device, its firmware, the SDL2 simulator and the BLE
+  transport.** With them go the v1/v2 wire protocol, per-transport queues and
+  sender tasks, protocol-version negotiation, time sync, post-connect replay,
+  and the brightness slider. `daemon.py` drops from 1038 to 603 lines.
+- The bundle no longer ships a simulator binary or requests Bluetooth
+  permission, and `build.sh` no longer needs a static SDL2 toolchain.
+- Notification banner cards. Clawd's per-session animation is the whole display.
+
+### Fixed
+
+- **The "waiting for input" alert lingered after you approved a tool.**
+  `PostToolUse` was registered only for `AskUserQuestion`, so a session blocked
+  on a `PermissionRequest` stayed in the alert state for the whole run of the
+  approved tool. It now clears as soon as that tool finishes.
+
+### Added
+
+- **macOS alert sounds** — Submarine when a session becomes blocked on you,
+  Glass when Claude finishes its turn. Toggleable from the menu.
+
 ## [1.4.1] - 2026-04-16
 
 ### Fixed

@@ -1,9 +1,0 @@
-# firmware/main/Kconfig.projbuild
-menu "Clawd Configuration"
-    config CLAWD_WIFI_ENABLED
-        bool "Enable WiFi (debug/setup)"
-        default n
-        help
-            Enable WiFi for OTA updates and debug logging.
-            Not needed for normal BLE notification operation.
-endmenu

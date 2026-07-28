@@ -1,197 +1,69 @@
-# Clawd Notification Display — TODO
+# Clawd Tank — TODO
 
-## Status (v1.4.0)
+## Status
 
-Firmware builds, flashes, and runs on the Waveshare ESP32-C6-LCD-1.47 board.
-BLE advertising works, notifications can be sent and dismissed via BLE GATT writes.
-23 C tests pass (with ASan+UBSan), 220 Python tests pass (14 test files).
-Clawd sprite animations and notification card UI are implemented.
-NVS-backed config store supports brightness and session timeout with BLE read/write.
-macOS menu bar app provides daemon control, device configuration UI, and simulator toggle.
-Daemon supports multi-transport (BLE + TCP simulator) with dynamic add/remove at runtime.
-Simulator supports TCP listener (`--listen`) for daemon-driven operation without hardware.
-Tool-aware working animations — 6 distinct Clawd animations based on Claude Code tool type.
-18 animated sprites integrated into scene.c, auto-cropped to tight bounding boxes.
-Multi-session display with up to 4 concurrent Clawd sprites (v2 protocol).
-Session state tracking in daemon with priority-based display state computation.
-Staleness eviction replaces timer-based sleep — sleep is now session-driven.
-Subagent lifecycle tracking prevents sleeping during long-running agent tasks.
-Session state persisted to disk — restarting the app preserves display state.
-Build script (`host/build.sh`) automates simulator + py2app + bundle.
-Auto-update hooks, daemon health monitoring, orphan sim cleanup, launchd auto-migration.
-Firmware uses RGB565A8 pixel format + cropped sprites to fit multi-session in ~200 KB SRAM (no PSRAM).
-Custom app icon. Proactive BLE reconnection with full state sync on disconnect.
+macOS menu bar app. Claude Code hooks report session activity over a Unix
+socket to an in-process daemon, which drives a status bar icon and a popover
+listing every live session. 328 Python tests pass.
+
+The ESP32 device, its firmware, the SDL2 simulator and the BLE transport were
+removed — the menu bar is the whole product now. Git history has the hardware
+era if you need it.
 
 ---
 
-## Code-review hardening (attention-hooks branch) — Complete
+## Menu bar widget — Complete
 
-Multi-agent review of the attention-hooks work surfaced 15 findings; fixes:
+- [x] **Session snapshot** — `build_session_snapshot()` gives the UI a view that
+  keeps `session_id`/`project`/`tool_name`, isn't capped at four sessions, and
+  does no animation mapping. Pushes are debounced 150 ms on the trailing edge
+  and suppressed when nothing observable changed, so a burst of hook events from
+  one Claude turn rebuilds the UI once.
+- [x] **Status bar icon** — driven by aggregate session state, priority
+  `error` > `waiting` > `working` > `thinking` > `idle` > none. Colour, not a
+  template image, at 44x44. Title badge only when it carries information.
+- [x] **Popover** — one row per session: sprite, project, detail text, elapsed
+  time, subagent badge, and an accent stripe for waiting/error. Scrolls past
+  ~4.5 rows. Refresh timer runs only while it's open.
+- [x] **Click routing** — rumps' `NSMenu` is detached on `before_start`;
+  left-click opens the popover, right-click re-attaches the menu and pops it.
+- [x] **Alert sounds** — Submarine on becoming blocked, Glass on turn end.
+- [x] **Preferences** — session timeout and alert sounds, with a one-shot prune
+  of the obsolete `ble_`/`sim_` keys.
+- [x] **Icon pipeline** — `tools/make_menubar_icons.py`, stdlib only, from the
+  frame stills in `assets/clawd-frames/`.
 
-- [x] **Don't staleness-evict `waiting` sessions** — a session blocked on AskUserQuestion/
-  PermissionRequest emits no events, so time-based eviction wrongly dropped the alert
-  while the user was away. Now excluded from staleness eviction; PID-liveness still
-  evicts a dead Claude process.
-- [x] **Installer self-heals / prunes superseded groups** — `install_hooks()` now drops our
-  OWN prior hook groups before re-appending the current config, so a changed matcher
-  no longer leaves a stale wildcard group firing on every tool. `are_hooks_installed()`
-  reports outdated when a leftover our-group sits under an unexpected matcher.
-- [x] **Installer crash-guard + precise command match** — tolerates malformed `{"hooks": null}`
-  groups (no TypeError); matches our notify command by exact-path/prefix, not substring
-  (a user wrapper containing the path is no longer mistaken for ours).
-- [x] **`waiting` outranks subagents** — a session with active subagents that hits a
-  permission/question prompt now shows the alert instead of being masked by `conducting`.
-- [x] **No phantom resurrection** — `permission`/`tool_failed` no longer create a missing
-  session (matches `tool_done`), so a late event after SessionEnd can't revive a ghost.
-- [x] **v1 alert priority** — on v1 transports `alert` (needs-you) now outranks working/
-  thinking instead of being buried.
-- [x] **Cleanup** — shared `ASK_USER_QUESTION_TOOL` constant (single source of truth),
-  `_enter_state` helper removes the copy-paste state branches, `sim_main.c` `--capture-anim`
-  learns `alert`, and a cross-validation test guards NOTIFY_SCRIPT↔protocol.py drift.
-- Verified NOT defects / accepted limitations: the `alert` sprite loops seamlessly
-  (frame 39 ≈ frame 0 — captured and checked), so no firmware change; a PermissionRequest
-  alert may persist into the approved tool's run (no "granted" hook exists in Claude Code);
-  `tool_failed` intentionally reuses the `confused` animation.
+## Session tracking — Complete
 
-## "Waiting for input" alert + PostToolUse — Complete
+- [x] Per-session state machine: `registered` / `thinking` / `working` / `idle` /
+  `waiting` / `confused` / `error`.
+- [x] Staleness eviction on monotonic time (survives sleep/wake); `waiting`
+  sessions exempt, since they legitimately emit nothing while blocked on you.
+- [x] PID liveness: a session whose `claude` process is gone is evicted within 30 s.
+- [x] PID-based dedup so `/clear` doesn't leave a ghost session behind.
+- [x] Subagent lifecycle tracking via `SubagentStart`/`SubagentStop`.
+- [x] Atomic persistence to `~/.clawd-tank/sessions.json`, pruned on load.
+- [x] `PostToolUse` registered for every tool, so the "waiting" alert clears the
+  moment an approved permission-gated tool finishes.
 
-- [x] **AskUserQuestion → waiting/alert** — When Claude shows the multiple-choice
-  dialog (`AskUserQuestion` tool), its `PreToolUse` now maps to a distinct
-  `waiting` session state that renders the `alert` Clawd animation, instead of the
-  generic `typing` it shared with real work. Claude is blocked on the human, so it
-  now looks like it.
-- [x] **PostToolUse hook (scoped to AskUserQuestion)** — New `PostToolUse` hook,
-  registered with `matcher: "AskUserQuestion"` to keep device event/BLE traffic
-  minimal. Emits a `tool_done` daemon event that clears the `waiting` alert back to
-  `thinking` the moment the user answers. The daemon-side handler is generic, so the
-  matcher can be broadened later with zero code change.
-- [x] **`alert` anim string parsing** — Added `"alert"` → `CLAWD_ANIM_ALERT` to both
-  `ble_service.c` and `sim_ble_parse.c` `parse_anim_name()` (it was previously
-  unmapped). v1 transports map the `alert` anim to the `confused` needs-attention
-  status. Notify script version bumped to `2026-05-30-posttooluse` (auto-reinstalls).
-- [x] **Non-clobbering hook installer** — `install_hooks()` now MERGES our hooks into
-  the user's Claude Code settings instead of `dict.update()` replacing whole event
-  keys. For each event+matcher we manage, our hook group is appended only if absent;
-  the user's own hooks (and other settings keys) are never modified or removed.
-  Idempotent. `are_hooks_installed()` is now matcher-aware so a new/changed matcher is
-  correctly detected as outdated. (`tests/test_hooks_install.py`, 12 tests.)
-- [x] **PermissionRequest → waiting/alert** — When Claude is blocked waiting for the
-  user to approve a tool, the session enters the same `waiting`/`alert` state as
-  AskUserQuestion. No "granted" hook exists and `PreToolUse` precedes it, so the alert
-  clears on the next `tool_use`/`Stop`/`UserPromptSubmit`. Fires only when a permission
-  dialog actually appears (auto-approved tools don't trigger it).
-- [x] **PostToolUseFailure → confused** — A genuine tool error (not a non-zero shell
-  exit) maps to the `confused` state — a transient "that didn't work" snag, lighter
-  than the API-error `error`/dizzy state. No notification card; clears on the next
-  event. Both new hooks reuse existing states/animations — no firmware/v1 changes.
-  Notify script version → `2026-05-30-permission-toolfailure`.
+## Hooks — Complete
 
-## Working Animations (v1.1.0) — Complete
+- [x] Embedded stdlib-only `clawd-tank-notify`, versioned by a marker comment.
+- [x] Matcher-aware, non-clobbering merge into `~/.claude/settings.json`; user
+  hooks are never touched, and Clawd's own stale groups are pruned.
+- [x] Auto-update on app launch when the installed version is outdated.
 
-- [x] **Session state tracking in daemon** — `dict[session_id → state]` with `_compute_display_state()` priority resolution. States: registered → thinking → working → idle → confused. Display priority: working_N > thinking > confused > idle > sleeping.
-- [x] **Intensity tiers** — 1 session working = Typing animation, 2 sessions = Juggling, 3+ sessions = Building.
-- [x] **Hook protocol expansion** — New hooks: SessionStart, PreToolUse, PreCompact. Hook discriminator field on existing add/dismiss events for daemon-side session state differentiation.
-- [x] **6 new sprite animations** — thinking (32f), typing (12f), juggling (10f), building (8f), confused (48f), sweeping (12f, oneshot). All 180×180px @ 8fps. Generated from SVG sources via svg2frames.py + png2rgb565.py pipeline.
-- [x] **Fallback animation mechanism** — `scene_set_fallback_anim()` allows oneshots (alert, happy, sweeping) to return to the current working animation instead of always IDLE.
-- [x] **set_status BLE/TCP action** — `display_status_t` enum with string-to-enum mapping in both firmware and simulator JSON parsers.
-- [x] **Session-driven sleep model** — Timer-based sleep removed from firmware. Sleep is now daemon-driven: no sessions = sleeping. Staleness eviction (configurable timeout, default 10min) handles ungraceful session termination.
-- [x] **PreCompact sweeping** — Daemon sends sweeping oneshot followed by computed state as fallback.
-- [x] **Hook migration detection** — `are_hooks_installed()` checks all required hooks, not just any. Install button always updates to latest.
-- [x] **Menu bar "Session Timeout"** — Renamed from "Sleep Timeout", wired to daemon staleness timeout.
+---
 
-## Sprites & Animations (v1.0.0) — Complete
+## Ideas / not scheduled
 
-- [x] **All 5 SVG animations converted to C sprite headers** — idle (96f/135×135), alert (40f/135×135), happy (20f/120×120), sleeping (36f/120×120), disconnected (36f/150×120). Frame buffer cap raised from 48→96. All `#if HAS_*_SPRITE` guards removed from `scene.c`. Alert and happy remain non-looping (one-shot). Idle, sleeping, disconnected loop.
-
-## UI/UX Design (v1.0.0) — Complete
-
-- [x] **Notification entry animation** — fade animation implemented (300ms ease-out via `lv_anim` + `lv_obj_set_style_opa`). Fade-in on show, fade-out with hide callback on dismiss. Instant path preserved for disconnect/clear.
-- [x] **Transition animation** — full-screen new notification → compact list view. New notification triggers a 2.5s hero/expanded card view (fills the notification panel), then animates via `lv_anim` with `lv_anim_path_ease_in_out` over 350ms down to the compact list height. Implemented in `notification_ui.c` via `notification_ui_trigger_hero()` (called from `ui_manager.c` on `BLE_EVT_NOTIF_ADD`). Auto-rotation and repeat-hero on rapid new notifications are both handled correctly.
-- [x] **Text truncation and scrolling** — featured card uses `LV_LABEL_LONG_SCROLL_CIRCULAR` marquee for both project name and message. Compact list uses `LV_LABEL_LONG_DOT` ("..."). Manual `snprintf` truncation removed.
-
-## Simulator Improvements (v1.1.0) — Complete
-
-- [x] **Default scale changed to 2x** — Window opens at 640×344 instead of 960×516.
-- [x] **`--pinned` flag** — Always-on-top mode via `SDL_SetWindowAlwaysOnTop`.
-- [x] **Auto-focus on launch** — `SDL_RaiseWindow` brings window to front.
-- [x] **Shutdown freeze fix** — Client socket closed during shutdown to unblock `recv()` in listener thread.
-
-## Python Host Hardening (v1.0.0) — Complete
-
-- [x] **Socket length framing** (`socket_server.py`) — switched to newline-delimited messages; server uses `readline()`, sender appends `\n`
-- [x] **`sys.exit(1)` in hook** (`clawd-notify`) — changed to `sys.exit(0)` with explanatory comment; notifications are best-effort
-- [x] **Log file context manager** (`clawd-notify`) — `open()` now in a `with` block; handle closed even if `Popen` raises
-- [x] **Broad `except Exception`** (`socket_server.py`) — `JSONDecodeError` caught separately with `logger.error`, `TimeoutError` caught explicitly with `logger.warning`, remaining unexpected errors use `logger.exception()` for full traceback
-
-## Testing Improvements (v1.0.0) — Complete
-
-- [x] **Add sanitizers to C test Makefile** — `-fsanitize=address,undefined -Werror` added to CFLAGS and LDFLAGS; 18/18 tests pass clean
-- [x] **Test `_replay_active`** — 4 tests: sends all active, empty store, skips unknown events, concurrent mutation safe
-- [x] **Test BLE write failure → reconnect → replay path** — 2 tests: single and multi-notification replay after write failure
-- [x] **Test `cwd=""`** (empty string explicitly) — verified `Path("").name` triggers the `"unknown"` fallback
-
-## Simulator-Daemon Bridge (v1.0.0) — Complete
-
-- [x] **TCP socket listener in simulator** — background pthread with mutex-guarded ring buffer queue, newline-delimited JSON protocol matching BLE GATT format. `--listen [port]` CLI flag (default 19872). Shared JSON parser (`sim_ble_parse.c`) mirrors firmware's `parse_notification_json`.
-- [x] **Multi-transport daemon architecture** — `TransportClient` Protocol, `SimClient` TCP transport, per-transport queues and sender tasks. `--sim` / `--sim-only` CLI flags. Dynamic `add_transport`/`remove_transport` methods.
-- [x] **Per-transport observer status** — `on_connection_change` includes transport name. Menubar shows per-transport status lines (BLE/Simulator: Connected/Connecting...).
-- [x] **Simulator toggle in menubar** — "Enable Simulator" checkable menu item with preference persistence (`~/.clawd-tank/preferences.json`). Dynamically adds/removes sim transport at runtime.
-- [x] **Initial replay on connect** — `_transport_sender` replays active notifications after initial connect, so dynamically-added transports show existing notifications.
-- [x] **Stop hook support** — `protocol.py` handles Stop hook event to show "Waiting for input" notification immediately when Claude stops.
-
-## Code Quality (v1.0.0) — Complete
-
-- [x] **Document `_lock_t` locking intent** (`ui_manager.c`) — comment explaining the lock covers both `rebuild_ui()` and `lv_timer_handler()`
-- [x] **Comment `display_init()` return** (`main.c:42`) — return value intentionally discarded; LVGL tracks default display internally
-- [x] **LVGL mutex migration** — added TODO comment in `ui_manager.c` noting the `lv_lock()`/`lv_unlock()` migration consideration and flush-ready integration concern
-
-## Subagent Tracking (v1.2.0) — Complete
-
-- [x] **SubagentStart/SubagentStop hooks** — New hooks registered and forwarded to daemon via the hook handler script.
-- [x] **Per-session subagent tracking** — `subagents: set[agent_id]` tracked per session in daemon state dict.
-- [x] **Eviction suppression** — Sessions with active subagents are never evicted by staleness checker.
-- [x] **Display state integration** — Sessions with active subagents count as "working" in display state computation, preventing Clawd from sleeping during long subagent tasks.
-
-## Session State Persistence (v1.2.0) — Complete
-
-- [x] **Atomic session state save/load** — `save_sessions()`/`load_sessions()` in `session_store.py` serialize session state dict to `~/.clawd-tank/sessions.json` with set↔list conversion. Atomic writes via temp file + `os.replace`.
-- [x] **Smart persistence** — Session state saved only on structural changes (state transitions, subagent add/remove), not on every `last_event` timestamp update. Reduces disk writes during heavy tool use.
-- [x] **Daemon startup recovery** — Loads saved sessions on init with immediate staleness eviction. Restarting the menu bar app immediately shows correct animation for running Claude Code sessions.
-
-## Daemon Resilience (v1.2.1) — Complete
-
-- [x] **Auto-update hooks on startup** — Hooks are checked and updated automatically on app launch when outdated, removing the need for manual "Install Hooks" clicks after code updates.
-- [x] **Daemon thread crash logging** — Daemon thread exceptions are caught and logged instead of dying silently. Periodic health check timer detects dead daemon and shows disconnected icon.
-- [x] **Orphaned sim process cleanup** — On startup, orphaned simulator processes on the listen port are identified by name and killed instead of being connected to.
-- [x] **Display state sync on replay** — `_last_display_state` is updated after transport replay to prevent duplicate broadcasts.
-- [x] **Proactive BLE reconnection** — Transport sender loop detects dropped connections on each 1s timeout and immediately reconnects with full state sync (time, protocol version, notifications, sessions) instead of waiting for the next hook message.
-
-## Multi-Session Display (v1.3.0) — Complete
-
-- [x] **Multi-session display** — Up to 4 concurrent Clawd sprites with per-session animations. Protocol v2 `set_sessions` action with stable UUIDs. Overflow badge shows "+N" beyond `MAX_VISIBLE=4`.
-- [x] **Walk-in animation** — New sessions enter from offscreen with a walking sprite. Existing sessions reposition with walk animations on layout change.
-- [x] **Going-away burrowing animation** — Exiting sessions play a burrowing animation. Remaining sessions defer repositioning until burrowing completes.
-- [x] **HUD subagent counter** — 2x-scaled mini-crab icon with pixel-art bitmap font shows active subagent count. Overflow badge anchored to right edge.
-- [x] **Per-session sweeping** — `PreCompact` sends sweep animation only to the compacting session (v2), global sweep preserved for v1 fallback.
-- [x] **Protocol version negotiation** — BLE GATT characteristic exposes protocol version (v2). Daemon reads on connect, selects v1 `set_status` or v2 `set_sessions` per-transport.
-- [x] **`query_state` TCP action** — Debug introspection returning JSON with slot states, animations, and positions.
-- [x] **Simulator window improvements** — Continuous float scaling, aspect ratio enforcement (328:180), uniform LED border rendering, borderless/resizable window with integer pixel scaling.
-- [x] **Custom app icon** — macOS app icon with Clawd pixel-art crab design. SVG source and full iconset in `assets/`.
-
-## Sprite Auto-Crop & Firmware Memory Optimization (v1.3.0) — Complete
-
-- [x] **Auto-crop sprite pipeline** — `tools/crop_sprites.py` reads existing C headers, decodes all frames, finds tight bounding box, applies symmetric horizontal + free vertical crop, re-encodes RLE, writes headers in-place. `tools/analyze_sprite_bounds.py` for analysis.
-- [x] **All 14 sprites cropped** — Frame buffer savings: 1194 KB → 368 KB (69%). Largest session sprite: confused 152x113 (50 KB). Idle: 72x51 (11 KB). Walking: 60x40 (7 KB).
-- [x] **RGB565A8 firmware pixel format** — Frame buffers use 3 bytes/pixel (LVGL native-with-alpha for 16-bit display) instead of 4 bytes/pixel ARGB8888. New `rle_decode_rgb565a8` decoder.
-- [x] **Firmware slot limits** — `MAX_VISIBLE=4`, `MAX_SLOTS=6` on firmware (no PSRAM). Simulator retains `MAX_SLOTS=8`.
-- [x] **y_offset adjustments** — All `anim_defs` y_offset values recomputed: `new = old - bottom_rows_removed`.
-- [x] **Firmware build fixes** — `pixel_font.c` added to CMakeLists, format specifier warnings fixed, unused code suppressed.
-- [x] **Heap diagnostics** — Free heap logged at boot. OOM logging in `ensure_frame_buf`.
-- [x] **PSRAM correction** — ESP32-C6FH8 has no PSRAM. Removed bogus settings from `sdkconfig.defaults`, corrected CLAUDE.md.
-
-## Future Considerations (Out of Scope)
-
-- Physical button interaction (dismiss notifications from the device)
-- Multiple host device support (pairing with more than one Mac)
-- OTA firmware updates over WiFi
-- Per-session project name display during working animations
+- **Native notification banners** — without the device, sound is the only
+  ambient signal when you're not looking at the menu bar. `osascript -e 'display
+  notification'` works in an unsigned bundle; `UNUserNotificationCenter` would
+  need signing. Would sit behind a toggle next to Alert Sounds.
+- **Click a session row to focus its terminal** — needs a way to map a session
+  back to its window; the PID is already tracked.
+- **Per-session mute** — silence alerts from one noisy project.
+- **Animated status bar icon** — deliberately not done: a 2 Hz timer redrawing
+  the status item defeats App Nap and costs battery for information you already
+  have.

@@ -3,8 +3,10 @@
 SVG Animation to PNG Frame Sequence Converter.
 
 Renders animated SVGs (CSS @keyframes + SVG animate elements) frame-by-frame
-using headless Chromium via Playwright, producing PNG sequences ready for
-the png2rgb565.py pipeline.
+using headless Chromium via Playwright, producing PNG sequences.
+
+Pick a representative still from the output, drop it into assets/clawd-frames/
+as <animation>-<frame>.png, then run tools/make_menubar_icons.py.
 
 Usage:
     python tools/svg2frames.py <input.svg> <output_dir/> [options]
@@ -319,7 +321,7 @@ def render_frames(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Convert animated SVG to PNG frame sequence for png2rgb565.py pipeline"
+        description="Convert an animated SVG to a PNG frame sequence"
     )
     parser.add_argument("input_svg", help="Input animated SVG file")
     parser.add_argument("output_dir", help="Output directory for PNG frames")
@@ -388,7 +390,8 @@ def main():
     print("Next step — convert to RGB565 header:")
     name_hint = svg_path.stem.replace("-", "_")
     print(
-        f"  python3 tools/png2rgb565.py {output_dir} firmware/main/{name_hint}_frames.h --name {name_hint}"
+        f"  cp {output_dir}/frame_XXXX.png assets/clawd-frames/{name_hint}-XXXX.png"
+        f" && python3 tools/make_menubar_icons.py"
     )
 
 

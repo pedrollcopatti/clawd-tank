@@ -1,23 +1,26 @@
 #!/usr/bin/env python3
 """
-Generate the menu bar app's icon set from the Clawd sprite sheets.
+Generate the menu bar app's icon set from the Clawd frame stills.
 
-The sprite headers under firmware/main/assets/ are the shipped Clawd artwork:
-RLE-compressed RGB565 with a transparent key colour. This decodes a chosen frame
-from each and emits two sets of PNGs:
+Source art lives in assets/clawd-frames/ as <animation>-<frame>.png: one still
+per animation, picked for legibility rather than for its place in the loop —
+most of these animations spend the bulk of their cycle on a plain crab and only
+flash their distinguishing element (the red "!", the error stars) for a few
+frames. They were exported from the device sprite sheets before the firmware was
+removed; assets/svg-animations/ holds the original animated SVGs.
+
+Emits two sets of PNGs:
 
   icons/<state>.png        44x44 for the status bar
   icons/rows/<anim>.png    96x96 for the session rows in the popover
 
-Both sets are full colour, NOT macOS template images. A template image is drawn
-from its alpha channel alone, which flattens the crab to a featureless blob and
-destroys exactly the thing the icon exists to convey: the red "!" of a session
-waiting on you, the yellow stars of an error, the thought bubble of a session
-thinking. Colour is the state signal here, so template mode is not an option.
+Both are full colour, NOT macOS template images. A template image is drawn from
+its alpha channel alone, which flattens the crab to a featureless blob and
+destroys exactly what the icon exists to convey. Colour is the state signal
+here, so template mode is not an option.
 
-Sprites are cropped to their non-transparent content before scaling — the source
-bounding boxes carry symmetric padding to keep Clawd centred on the device, and
-at 20pt in the menu bar that padding would shrink the crab to nothing.
+44x44 because rumps forces setSize_((20, 20)) on the status item image, so a
+Retina display asks for 40 physical pixels.
 
 Stdlib only — no PIL, no playwright. Run from the repo root:
 
@@ -26,112 +29,104 @@ Stdlib only — no PIL, no playwright. Run from the repo root:
 """
 
 import argparse
-import re
 import struct
 import sys
 import zlib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-SPRITE_DIR = REPO / "firmware" / "main" / "assets"
+FRAME_DIR = REPO / "assets" / "clawd-frames"
 ICON_DIR = REPO / "host" / "clawd_tank_menubar" / "icons"
 
 MENUBAR_PX = 44
 ROW_PX = 96
 
-# Status bar icons: aggregate session state -> (sprite header, frame, opacity).
-# Frames are chosen for legibility as a still, not for their place in the loop:
-# most of these animations spend the majority of their cycle on a plain crab and
-# only flash their distinguishing element (the "!", the stars) for a few frames.
+# Status bar icon -> (frame file stem, opacity).
 MENUBAR_ICONS = {
-    "crab-sleeping": ("sprite_sleeping", 18, 1.0),   # crab under a "Z"
-    "crab-idle": ("sprite_idle", 0, 1.0),
-    "crab-thinking": ("sprite_thinking", 8, 1.0),    # thought bubble up
-    "crab-working": ("sprite_typing", 0, 1.0),       # crab at the laptop
-    "crab-waiting": ("sprite_alert", 8, 1.0),        # red "!" raised
-    "crab-error": ("sprite_dizzy", 16, 1.0),         # stars out
-    # Daemon thread died. sprite_disconnected is a crab beside a Bluetooth glyph,
-    # which says nothing once the device is gone — a ghosted idle crab reads as
-    # "the app isn't running" without implying a radio.
-    "crab-offline": ("sprite_idle", 0, 0.35),
+    "crab-sleeping": ("sleeping-18", 1.0),   # crab under a "Z"
+    "crab-idle": ("idle-0", 1.0),
+    "crab-thinking": ("thinking-8", 1.0),    # thought bubble up
+    "crab-working": ("typing-0", 1.0),       # crab at the laptop
+    "crab-waiting": ("alert-8", 1.0),        # red "!" raised
+    "crab-error": ("dizzy-16", 1.0),         # stars out
+    # Daemon thread died. A ghosted idle crab reads as "the app isn't running"
+    # without implying anything about a connection.
+    "crab-offline": ("idle-0", 0.35),
 }
 
-# Popover row sprites, keyed by the animation names the UI maps sessions to.
+# Popover row sprites, keyed by the animation names session_view_model.py picks.
 ROW_SPRITES = {
-    "idle": ("sprite_idle", 0, 1.0),
-    "sleeping": ("sprite_sleeping", 18, 1.0),
-    "thinking": ("sprite_thinking", 8, 1.0),
-    "typing": ("sprite_typing", 0, 1.0),
-    "building": ("sprite_building", 0, 1.0),
-    "debugger": ("sprite_debugger", 0, 1.0),
-    "wizard": ("sprite_wizard", 0, 1.0),
-    "beacon": ("sprite_beacon", 0, 1.0),
-    "conducting": ("sprite_conducting", 0, 1.0),
-    "sweeping": ("sprite_sweeping", 0, 1.0),
-    "alert": ("sprite_alert", 8, 1.0),
-    "confused": ("sprite_confused", 24, 1.0),
-    "dizzy": ("sprite_dizzy", 16, 1.0),
+    "idle": ("idle-0", 1.0),
+    "sleeping": ("sleeping-18", 1.0),
+    "thinking": ("thinking-8", 1.0),
+    "typing": ("typing-0", 1.0),
+    "building": ("building-0", 1.0),
+    "debugger": ("debugger-0", 1.0),
+    "wizard": ("wizard-0", 1.0),
+    "beacon": ("beacon-0", 1.0),
+    "conducting": ("conducting-0", 1.0),
+    "sweeping": ("sweeping-0", 1.0),
+    "alert": ("alert-8", 1.0),
+    "confused": ("confused-24", 1.0),
+    "dizzy": ("dizzy-16", 1.0),
 }
 
 
-# --- Sprite header parsing -------------------------------------------------
+# --- PNG I/O ---------------------------------------------------------------
 
-def parse_sprite_header(path: Path) -> dict:
-    """Extract dimensions, frame offsets and RLE payload from a sprite header."""
-    text = path.read_text()
+def read_png(path: Path) -> tuple[bytearray, int, int]:
+    """Read an 8-bit RGBA PNG. Returns (pixels, width, height).
 
-    def const(suffix: str) -> int:
-        m = re.search(rf"#define\s+\w+_{suffix}\s+(0x[0-9A-Fa-f]+|\d+)", text)
-        if not m:
-            raise ValueError(f"{path.name}: no {suffix} constant")
-        return int(m.group(1), 0)
+    Only handles what write_png() below emits — a single IDAT of filter-0 rows.
+    These files are ours; a general decoder would be dead weight.
+    """
+    data = path.read_bytes()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError(f"{path.name}: not a PNG")
 
-    def array(suffix: str) -> list[int]:
-        m = re.search(rf"\w+_{suffix}\[\w*\]\s*=\s*\{{(.*?)\}};", text, re.S)
-        if not m:
-            raise ValueError(f"{path.name}: no {suffix} array")
-        return [int(tok, 0) for tok in re.findall(r"0x[0-9A-Fa-f]+|\d+", m.group(1))]
+    pos, width, height, idat = 8, 0, 0, bytearray()
+    while pos < len(data):
+        length = struct.unpack(">I", data[pos:pos + 4])[0]
+        tag = data[pos + 4:pos + 8]
+        payload = data[pos + 8:pos + 8 + length]
+        if tag == b"IHDR":
+            width, height, depth, colour = struct.unpack(">IIBB", payload[:10])
+            if (depth, colour) != (8, 6):
+                raise ValueError(f"{path.name}: expected 8-bit RGBA")
+        elif tag == b"IDAT":
+            idat += payload
+        elif tag == b"IEND":
+            break
+        pos += 12 + length
 
-    return {
-        "width": const("WIDTH"),
-        "height": const("HEIGHT"),
-        "frame_count": const("FRAME_COUNT"),
-        "transparent": const("TRANSPARENT_KEY"),
-        "offsets": array("frame_offsets"),
-        "rle": array("rle_data"),
-    }
+    raw = zlib.decompress(bytes(idat))
+    stride = width * 4
+    pixels = bytearray(width * height * 4)
+    for y in range(height):
+        start = y * (stride + 1)
+        if raw[start] != 0:
+            raise ValueError(f"{path.name}: unsupported row filter")
+        pixels[y * stride:(y + 1) * stride] = raw[start + 1:start + 1 + stride]
+    return pixels, width, height
 
 
-def decode_frame(sprite: dict, index: int) -> bytearray:
-    """Decode one frame to a width*height RGBA buffer."""
-    w, h = sprite["width"], sprite["height"]
-    if not 0 <= index < sprite["frame_count"]:
-        raise IndexError(f"frame {index} out of range (0..{sprite['frame_count'] - 1})")
+def write_png(path: Path, size: int, rgba: bytearray) -> None:
+    raw = bytearray()
+    for y in range(size):
+        raw.append(0)  # filter type 0 (None)
+        raw += rgba[y * size * 4:(y + 1) * size * 4]
 
-    start, end = sprite["offsets"][index], sprite["offsets"][index + 1]
-    rle = sprite["rle"][start:end]
-    key = sprite["transparent"]
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
 
-    rgba = bytearray(w * h * 4)
-    pos = 0
-    for i in range(0, len(rle) - 1, 2):
-        colour, run = rle[i], rle[i + 1]
-        if colour == key:
-            pos += run  # already zeroed → transparent
-            continue
-        r = ((colour >> 11) & 0x1F) * 255 // 31
-        g = ((colour >> 5) & 0x3F) * 255 // 63
-        b = (colour & 0x1F) * 255 // 31
-        pixel = bytes((r, g, b, 255))
-        for _ in range(run):
-            if pos >= w * h:
-                break
-            rgba[pos * 4:pos * 4 + 4] = pixel
-            pos += 1
-
-    if pos != w * h:
-        print(f"  warning: decoded {pos} of {w * h} pixels", file=sys.stderr)
-    return rgba
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+        + chunk(b"IEND", b"")
+    )
 
 
 # --- Resampling ------------------------------------------------------------
@@ -201,64 +196,39 @@ def apply_opacity(rgba: bytearray, factor: float) -> bytearray:
     return rgba
 
 
-# --- PNG output ------------------------------------------------------------
-
-def write_png(path: Path, size: int, rgba: bytearray) -> None:
-    raw = bytearray()
-    for y in range(size):
-        raw.append(0)  # filter type 0 (None)
-        raw += rgba[y * size * 4:(y + 1) * size * 4]
-
-    def chunk(tag: bytes, data: bytes) -> bytes:
-        return (struct.pack(">I", len(data)) + tag + data
-                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(
-        b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0))
-        + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
-        + chunk(b"IEND", b"")
-    )
-
-
 # --- Driver ----------------------------------------------------------------
 
-def render(sprite_name: str, frame: int, opacity: float, size: int,
-           out_path: Path) -> None:
-    sprite = parse_sprite_header(SPRITE_DIR / f"{sprite_name}.h")
-    pixels, cw, ch = crop_to_content(
-        decode_frame(sprite, frame), sprite["width"], sprite["height"]
-    )
-    rgba = apply_opacity(fit_into_square(pixels, cw, ch, size), opacity)
+def render(frame: str, opacity: float, size: int, out_path: Path) -> None:
+    pixels, w, h = read_png(FRAME_DIR / f"{frame}.png")
+    pixels, w, h = crop_to_content(pixels, w, h)
+    rgba = apply_opacity(fit_into_square(pixels, w, h, size), opacity)
     write_png(out_path, size, rgba)
     dim = f" @{opacity:.0%}" if opacity < 1.0 else ""
-    print(f"  {out_path.relative_to(REPO)}  "
-          f"({sprite['width']}x{sprite['height']} frame {frame} "
-          f"-> crop {cw}x{ch} -> {size}x{size}{dim})")
+    print(f"  {out_path.relative_to(REPO)}  ({frame} {w}x{h} -> {size}x{size}{dim})")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--only", help="Regenerate a single icon or row sprite by name")
     args = parser.parse_args()
 
-    if not SPRITE_DIR.is_dir():
-        print(f"error: sprite headers not found at {SPRITE_DIR}", file=sys.stderr)
+    if not FRAME_DIR.is_dir():
+        print(f"error: frame stills not found at {FRAME_DIR}", file=sys.stderr)
         return 1
 
     print("Status bar icons:")
-    for name, (sprite_name, frame, opacity) in MENUBAR_ICONS.items():
+    for name, (frame, opacity) in MENUBAR_ICONS.items():
         if args.only and args.only not in (name, name.removeprefix("crab-")):
             continue
-        render(sprite_name, frame, opacity, MENUBAR_PX, ICON_DIR / f"{name}.png")
+        render(frame, opacity, MENUBAR_PX, ICON_DIR / f"{name}.png")
 
     print("Popover row sprites:")
-    for name, (sprite_name, frame, opacity) in ROW_SPRITES.items():
+    for name, (frame, opacity) in ROW_SPRITES.items():
         if args.only and args.only != name:
             continue
-        render(sprite_name, frame, opacity, ROW_PX, ICON_DIR / "rows" / f"{name}.png")
+        render(frame, opacity, ROW_PX, ICON_DIR / "rows" / f"{name}.png")
 
     return 0
 

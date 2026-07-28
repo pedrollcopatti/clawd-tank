@@ -4,17 +4,9 @@
 # ESP-IDF
 bsp/esp-idf/
 .espressif/
-firmware/.envrc
 host/.envrc
 
 # Firmware build artifacts
-firmware/build/
-firmware/test/test_notification
-firmware/test/test_config_store
-firmware/sdkconfig
-firmware/sdkconfig.old
-firmware/managed_components/
-firmware/dependencies.lock
 
 # Python
 host/venv/
@@ -30,11 +22,8 @@ host/dist/
 host/.eggs/
 
 # Simulator build artifacts
-simulator/build/
-simulator/build-static/
 
 # Firmware test binaries
-firmware/test/test_rle_decode
 
 # Screenshots
 shots/
@@ -47,7 +36,6 @@ shots/
 clawd0.png
 
 # IDE / tooling caches
-firmware/.cache/
 .DS_Store
 
 # Misc
@@ -69,3 +57,9 @@ docs/claude_hooks_integration_plan.md
 docs/hooks_reference.md
 assets/svg-animations/prompts/
 local/
+
+# Leftover local build output from the removed firmware/simulator.
+# The sources are gone from the repo (see git history); these directories may
+# still exist in old working copies full of ESP-IDF and CMake output.
+firmware/
+simulator/

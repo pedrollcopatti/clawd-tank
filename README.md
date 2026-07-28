@@ -4,233 +4,125 @@
 
 <h1 align="center">Clawd Tank</h1>
 
-A tiny desktop aquarium for your Claude Code sessions.
+A menu bar crab that watches your Claude Code sessions.
 
-Clawd Tank is a notification display for Claude Code built on a [Waveshare ESP32-C6-LCD-1.47](https://s.click.aliexpress.com/e/_c4PGS55v) (320x172 ST7789). An animated pixel-art crab named Clawd lives on the screen, reacting to your coding session — alerting on new notifications, celebrating when you dismiss them, and sleeping when you're away.
+Clawd Tank lives in the macOS menu bar. An animated pixel-art crab named Clawd
+reacts to what your Claude Code sessions are doing — working, thinking, stuck, or
+waiting on you — and a click lists every live session with its project, what it's
+running, and how long it's been at it.
 
-**No hardware? No problem.** The simulator runs natively on macOS and ships bundled inside the Menu Bar app. Download it from [Releases](https://github.com/marciogranzotto/clawd-tank/releases) — no build tools needed.
-
-<p align="center">
-  <img src="assets/sim-recordings/clawd-multi-session.gif" alt="Multi-session display" width="480">
-  <img src="assets/sim-recordings/clawd-notification.gif" alt="Clawd notification" width="480">
-</p>
+Multiple sessions across multiple projects show up together, so the one that's
+been sitting on a permission prompt for four minutes doesn't stay hidden behind
+the terminal you're not looking at.
 
 ## How It Works
 
 ```
-Claude Code hooks --> clawd-tank-notify --> daemon --> BLE --> ESP32-C6 display
-                                                  \-> TCP --> Simulator (SDL2)
+Claude Code hooks --> clawd-tank-notify --> Unix socket --> daemon
+                                                              |
+                                          +-------------------+-------------------+
+                                          |                   |                   |
+                                    status bar icon      session popover     alert sounds
 ```
 
-1. **Claude Code hooks** (`SessionStart`, `PreToolUse`, `PreCompact`, `Stop`, `StopFailure`, `Notification`, `UserPromptSubmit`, `SessionEnd`, `SubagentStart`, `SubagentStop`) fire on session events
-2. **clawd-tank-notify** (`~/.clawd-tank/clawd-tank-notify`) forwards the event to the daemon via Unix socket
-3. The **daemon** tracks per-session state, maps `tool_name` to animations, and sends JSON payloads to connected transports (BLE hardware, TCP simulator)
-4. The **firmware** (or simulator) renders Clawd's tool-aware animation + notification cards on the LCD via LVGL
-
-## Components
-
-| Directory | What | Language |
-|-----------|------|----------|
-| `firmware/` | ESP-IDF firmware (LVGL UI, NimBLE GATT server, SPI display) | C |
-| `simulator/` | Native macOS simulator — runs the same firmware code without hardware | C |
-| `host/` | Background daemon, Claude Code hook handler, macOS menu bar app | Python |
-| `tools/` | Sprite pipeline (SVG to PNG to RLE-compressed RGB565), GIF recorder, BLE debugging | Python |
-
-## Hardware
-
-- **Board**: [Waveshare ESP32-C6-LCD-1.47](https://s.click.aliexpress.com/e/_c4PGS55v)
-- **Display**: 1.47" 320x172 ST7789V (SPI), 16-bit RGB565
-- **SoC**: ESP32-C6FH8 (RISC-V, single core), 8MB flash, 512KB SRAM (no PSRAM)
-- **RGB LED**: Onboard WS2812B on GPIO8 — flashes on incoming notifications
-- **Connectivity**: BLE 5.0 (NimBLE, peripheral role)
+1. **Claude Code hooks** (`SessionStart`, `PreToolUse`, `PostToolUse`,
+   `PermissionRequest`, `PostToolUseFailure`, `PreCompact`, `Stop`,
+   `StopFailure`, `Notification`, `UserPromptSubmit`, `SessionEnd`,
+   `SubagentStart`, `SubagentStop`) fire on session events.
+2. **clawd-tank-notify** (`~/.clawd-tank/clawd-tank-notify`) forwards each event
+   to the daemon over a Unix socket. It's stdlib-only, so it adds no startup cost
+   to your shell.
+3. The **daemon** keeps a state machine per session, evicts sessions whose
+   `claude` process is gone, and pushes a snapshot to the UI.
+4. The **menu bar app** turns that into an icon, a title badge, and the popover.
 
 ## Quick Start
 
-### Download (no hardware needed)
+Grab the latest `.app` from
+[Releases](https://github.com/marciogranzotto/clawd-tank/releases), unzip, and
+drag it to Applications.
 
-Grab the latest `.app` from [Releases](https://github.com/marciogranzotto/clawd-tank/releases), unzip, and drag to Applications. The app bundles the simulator — a borderless, resizable window shows Clawd on your desktop, driven by your Claude Code sessions.
+On first launch: right-click the crab in the menu bar → **Install Claude Code
+Hooks**. Restart any running Claude Code sessions.
 
-On first launch: click the crab icon in the menu bar → **Install Claude Code Hooks**. Restart any running Claude Code sessions.
-
-### Build from source — Simulator
-
-```bash
-brew install sdl2 cmake
-
-cd simulator
-cmake -B build && cmake --build build
-
-# Interactive mode — opens a borderless, resizable SDL2 window
-./build/clawd-tank-sim
-
-# Interactive + TCP listener — daemon can connect and drive it
-./build/clawd-tank-sim --listen
-
-# Self-contained binary (no Homebrew SDL2 needed)
-cmake -B build-static -DSTATIC_SDL2=ON && cmake --build build-static
-
-# Headless mode — outputs PNG screenshots
-./build/clawd-tank-sim --headless \
-  --events 'connect; wait 500; notify "clawd-tank" "Waiting for input"; wait 2000; disconnect' \
-  --screenshot-dir ./shots/ --screenshot-on-event
-```
-
-Interactive keys: `c` connect, `d` disconnect, `n` add notification, `1-8` dismiss, `x` clear, `s` screenshot, `z` sleep, `q` quit. The window is borderless and resizable — drag from center, resize from edges.
-
-When `--listen` is active (default port 19872), the daemon can connect over TCP and drive the simulator with the same JSON protocol used over BLE, enabling the full Claude Code → daemon → display pipeline without hardware.
-
-See [simulator/README.md](simulator/README.md) for full CLI reference and JSON scenario support.
-
-### Firmware
-
-Requires [ESP-IDF 5.3.2](https://docs.espressif.com/projects/esp-idf/en/v5.3.2/esp32c6/get-started/index.html) (bundled in `bsp/esp-idf/`, activated via direnv).
-
-```bash
-cd firmware
-idf.py build
-idf.py -p /dev/ttyACM0 flash monitor
-```
-
-### macOS Menu Bar App
-
-The menu bar app bundles the daemon and simulator with a status bar UI. It manages two independent transports — **BLE** (hardware) and **Simulator** (software) — each with their own submenu for enable/disable and connection status.
-
-```bash
-# Run from source
-cd host && python -m clawd_tank_menubar
-
-# Build and install (builds static simulator, py2app, bundles binary)
-cd host && ./build.sh --install
-
-# Or build manually
-cd host && pip install py2app && python setup.py py2app
-cp ../simulator/build-static/clawd-tank-sim "dist/Clawd Tank.app/Contents/MacOS/"
-open "dist/Clawd Tank.app"
-```
-
-**Menu features:**
-- BLE and Simulator transport submenus with enable/disable toggles
-- Simulator window controls: Show/Hide, Always on Top
-- Brightness slider, session timeout picker
-- Claude Code hook installer
-- Version display (tag or branch+N@sha)
-- Launch at Login with stale plist detection
-
-On launch, the app automatically installs a hook handler script to `~/.clawd-tank/clawd-tank-notify`. To connect it to Claude Code, click **"Install Claude Code Hooks"** in the menu bar dropdown — this adds the required hooks to `~/.claude/settings.json`. Restart any running Claude Code sessions for hooks to take effect.
-
-Logs are written to `~/Library/Logs/ClawdTank/clawd-tank.log`.
-
-Pre-built releases are available on the [Releases](https://github.com/marciogranzotto/clawd-tank/releases) page.
-
-### Host Daemon (standalone)
-
-The daemon can also run standalone without the menu bar app:
+### Build from source
 
 ```bash
 cd host
-pip install -r requirements.txt
-
-# Run daemon with simulator transport
-python -m clawd_tank_daemon --sim
-
-# Run daemon with simulator only (no BLE)
-python -m clawd_tank_daemon --sim-only
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+./build.sh --install
 ```
 
-The daemon auto-starts on the first hook event. Logs at `~/.clawd-tank/daemon.log`.
+No Xcode, no Homebrew dependencies — py2app and pyobjc (which arrives with
+rumps) are all it needs.
 
-## Features
+## Using It
 
-- **Multi-session display** — up to 4 concurrent Claude Code sessions shown as individual animated Clawd sprites, each with their own working animation. New sessions walk in, exiting sessions burrow away
-- **Tool-aware animations** — Clawd shows distinct animations based on which tool Claude is using: debugger (Read/Grep), typing (Edit/Write), building (Bash), wizard (WebSearch), conducting (Agent/subagents), beacon (LSP/MCP)
-- **Session tracking** — daemon tracks per-session state with priority-based display resolution, staleness eviction, and subagent lifecycle tracking
-- **Session persistence** — session state survives daemon restarts, so relaunching the app immediately shows the correct animation for running sessions
-- **Time display** — synced from host over BLE on connect (no WiFi/NTP needed)
-- **RGB LED flash** — onboard WS2812B cycles through colors on new notifications
-- **RLE sprite compression** — all sprite assets compressed ~14:1 (13MB raw → ~900KB)
-- **Bundled simulator** — macOS `.app` ships with the simulator binary, no hardware needed. Borderless resizable window with integer pixel scaling
-- **Multi-transport** — daemon supports BLE (hardware) and TCP (simulator) transports simultaneously, independently enable/disable
-- **Simulator bridge** — full pipeline works without hardware via `--listen` flag and TCP. Window show/hide/pinned controlled over TCP
-- **Static SDL2 build** — `STATIC_SDL2=ON` produces a self-contained binary with zero external dependencies
-- **Auto-reconnect** — daemon replays active notifications and display state after reconnect on any transport
-- **Config over BLE/TCP** — brightness and session timeout adjustable via config characteristic or TCP
-- **macOS menu bar app** — transport submenus with colored status indicators, simulator window controls, brightness slider, session timeout, hook installer, version display, launch-at-login
+- **Left-click** the crab — the session list.
+- **Right-click** (or the popover's ⚙ Settings) — session timeout, alert sounds,
+  hook installation, launch at login.
+
+The title beside the icon appears only when it says something: `3` when three
+sessions are running, `2!` when two are waiting on you. A single session shows
+no number.
 
 ## Clawd's Moods
 
-### Tool-Aware Animations
+| Icon | Meaning |
+|------|---------|
+| 💤 Sleeping | No Claude sessions running |
+| 🦀 Idle | Sessions exist, none busy |
+| 💭 Thinking | Claude is working out what to do |
+| 💻 Working | Running a tool |
+| ❗ Waiting | Blocked on you — a permission prompt or a question |
+| ✨ Error | A session stopped with an API error |
 
-Clawd's animation reflects which tool Claude is currently using. Each session gets its own Clawd sprite with a tool-specific animation:
+When several sessions disagree, the most actionable one wins:
+`error` > `waiting` > `working` > `thinking` > `idle`. A session waiting on you
+is never hidden behind busier-looking ones.
 
-| Animation | Tools | |
-|-----------|-------|---|
-| **Debugger** | `Read`, `Grep`, `Glob` — searching/inspecting code | ![Debugger](assets/sim-recordings/clawd-debugger.gif) |
-| **Typing** | `Edit`, `Write`, `NotebookEdit` — writing code | ![Typing](assets/sim-recordings/clawd-typing.gif) |
-| **Building** | `Bash` — running shell commands | ![Building](assets/sim-recordings/clawd-building.gif) |
-| **Conducting** | `Agent` / active subagents — orchestrating work | ![Conducting](assets/sim-recordings/clawd-conducting.gif) |
-| **Wizard** | `WebSearch`, `WebFetch` — conjuring web knowledge | ![Wizard](assets/sim-recordings/clawd-wizard.gif) |
-| **Beacon** | `LSP`, MCP tools (`mcp__*`) — communicating with services | ![Beacon](assets/sim-recordings/clawd-beacon.gif) |
+Inside the popover each row picks its own sprite from what that session is
+actually doing — reading, editing, running a command, searching the web, calling
+an MCP tool, or conducting subagents.
 
-### Session States
+## Alert Sounds
 
-| State | When | |
-|-------|------|---|
-| **Multi-session** | 2+ concurrent sessions, each with individual tool animations | ![Multi-session](assets/sim-recordings/clawd-multi-session.gif) |
-| **Thinking** | User submitted a prompt, Claude is reasoning | ![Thinking](assets/sim-recordings/clawd-thinking.gif) |
-| **Confused** | Claude has been waiting 60s+ for user input | ![Confused](assets/sim-recordings/clawd-confused.gif) |
-| **Sweeping** | Context compaction (PreCompact) — oneshot | ![Sweeping](assets/sim-recordings/clawd-sweeping.gif) |
+Two cues, toggleable from the menu:
 
-### HUD Badges
+- **Attention** (Submarine) — a session just became blocked on you.
+- **Done** (Glass) — Claude finished its turn.
 
-| Badge | When | |
-|-------|------|---|
-| **Subagent counter** | Active subagents — mini-crab icon with `×N` count (top-left) | ![Subagents](assets/sim-recordings/clawd-hud-subagents.gif) |
-| **Overflow (wide)** | 5+ sessions — `+N` badge shows extra sessions beyond the 4 visible (top-right) | ![Overflow wide](assets/sim-recordings/clawd-overflow-wide.gif) |
-| **Overflow (narrow)** | Notification panel open — `×N` badge shows total session count (top-right of scene) | ![Overflow narrow](assets/sim-recordings/clawd-overflow-narrow.gif) |
+## Session Lifecycle
 
-### Notification & Lifecycle
+Sessions are evicted when they go quiet past the configured timeout (default 10
+minutes), or as soon as their `claude` process exits. Sessions *waiting on you*
+are exempt from the timeout — they legitimately emit nothing while they wait.
 
-| State | When | |
-|-------|------|---|
-| **Idle** | Connected, no notifications — Clawd hangs out, full-screen with clock | ![Idle](assets/sim-recordings/clawd-idle.gif) |
-| **Alert** | New notification arrives — Clawd shifts left, cards appear, LED flashes | ![Alert](assets/sim-recordings/clawd-notification.gif) |
-| **Happy** | Notifications dismissed | ![Happy](assets/sim-recordings/clawd-happy.gif) |
-| **Sleeping** | No active sessions — all sessions ended or evicted | ![Sleeping](assets/sim-recordings/clawd-sleeping.gif) |
-| **Disconnected** | No BLE connection — "No connection" message | ![Disconnected](assets/sim-recordings/clawd-disconnected.gif) |
+State is persisted to `~/.clawd-tank/sessions.json`, so quitting and reopening
+the app doesn't lose track of sessions that are still running.
 
 ## Tests
 
 ```bash
-# C unit tests (notification store)
-cd firmware/test && make test
-
-# Python tests (host daemon + protocol)
-cd host && pip install -r requirements-dev.txt && pytest
+cd host && .venv/bin/pytest -q
 ```
 
-## Sprite Pipeline
-
-Clawd's animations are pixel art generated as animated SVGs, rendered to PNG frame sequences, and converted to RLE-compressed RGB565 C headers:
+## Icons
 
 ```bash
-# SVG animation → PNG frames (requires Playwright)
-python tools/svg2frames.py assets/svg-animations/clawd-working-thinking.svg /tmp/frames/ \
-  --fps 8 --duration auto --scale 4
-
-# PNG frames → C header
-python tools/png2rgb565.py /tmp/frames/ firmware/main/assets/sprite_thinking.h --name thinking
-
-# Record seamlessly-looping GIFs of all animations (for docs)
-python tools/record_gif.py --all assets/captures/
+python3 tools/make_menubar_icons.py
 ```
 
-## BLE Debugging
+Stdlib only. Frame stills live in `assets/clawd-frames/`; the animated SVG
+masters are in `assets/svg-animations/`.
 
-```bash
-# Interactive BLE tool — connect, send notifications, read config
-python tools/ble_interactive.py
-```
+## History
+
+Clawd Tank started as a physical notification display on a Waveshare
+ESP32-C6-LCD-1.47, with this app as its control panel and an SDL2 simulator for
+hardware-free use. The firmware, simulator and BLE transport were removed once
+the menu bar became the whole product — the git history still has all of it.
 
 ## License
 
-MIT
+See [LICENSE](LICENSE).

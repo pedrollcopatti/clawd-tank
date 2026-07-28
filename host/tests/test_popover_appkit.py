@@ -107,6 +107,8 @@ def test_install_status_item_ui_detaches_the_menu_and_takes_over_clicks():
     )
 
     status_item = AppKit.NSStatusBar.systemStatusBar().statusItemWithLength_(-1)
+    if status_item is None or status_item.button() is None:
+        pytest.skip("no window server (headless CI runner)")
     try:
         menu = AppKit.NSMenu.alloc().init()
         menu.addItemWithTitle_action_keyEquivalent_("Settings", None, "")
