@@ -14,6 +14,7 @@ def _state(**overrides):
         "tool_name": "Bash",
         "project": "clawd-tank",
         "subagents": set(),
+        "pid": 4242,
     }
     base.update(overrides)
     return base
@@ -34,6 +35,7 @@ def test_carries_every_ui_field():
         "state": "working",
         "tool_name": "Bash",
         "subagents": 2,
+        "pid": 4242,
         "last_event": 1_700_000_000.0,
     }]
 
@@ -61,7 +63,8 @@ def test_skips_order_entries_whose_session_is_gone():
 
 
 def test_missing_fields_fall_back_to_defaults():
-    """A session restored from an older sessions.json may lack project/tool."""
+    """A session restored from disk lacks a PID — session_store drops them,
+    because a recycled one would look alive to the liveness check."""
     states = {"s1": {"state": "idle", "last_event": 5.0}}
 
     assert build_session_snapshot(states, [("s1", 1)]) == [{
@@ -71,6 +74,7 @@ def test_missing_fields_fall_back_to_defaults():
         "state": "idle",
         "tool_name": "",
         "subagents": 0,
+        "pid": None,
         "last_event": 5.0,
     }]
 

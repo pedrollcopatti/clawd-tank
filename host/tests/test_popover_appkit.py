@@ -17,7 +17,7 @@ def session(**overrides):
     base = {
         "session_id": "s1", "display_id": 1, "project": "clawd-tank",
         "state": "working", "tool_name": "Bash", "subagents": 0,
-        "last_event": time.time(),
+        "pid": 4242, "last_event": time.time(),
     }
     base.update(overrides)
     return base
@@ -93,6 +93,46 @@ def test_tick_updates_elapsed_without_rebuilding_rows(controller):
     row = controller._rows[0]
     row.apply_elapsed("2m")
     assert controller._rows[0] is row
+
+
+def test_rows_with_a_pid_are_clickable(controller):
+    controller.reload([session(pid=4242)])
+    assert controller._rows[0].view._on_click is not None
+
+
+def test_rows_without_a_pid_are_not_clickable(controller):
+    """A session restored from disk has no PID until its next event; the row
+    must not offer a hover state and a pointing hand it can't honour."""
+    controller.reload([session(pid=None)])
+    assert controller._rows[0].view._on_click is None
+
+
+def test_clicking_a_row_focuses_that_session(controller, monkeypatch):
+    from clawd_tank_menubar import popover as popover_mod
+    from clawd_tank_menubar.session_focus import HostApp
+
+    focused = []
+    monkeypatch.setattr(
+        popover_mod, "resolve_host_app",
+        lambda pid: HostApp(pid=99, bundle_path="/Applications/X.app",
+                            name="X", bundle_id="com.example.X"),
+    )
+    monkeypatch.setattr(popover_mod, "session_cwd", lambda pid: None)
+    monkeypatch.setattr(popover_mod, "activation_command", lambda h, cwd: ["true"])
+    monkeypatch.setattr(controller, "_focus_session", lambda m: focused.append(m))
+
+    controller.reload([session(project="alpha"), session(session_id="s2", project="beta")])
+    controller._rows[1].view._on_click()
+
+    assert [m.project for m in focused] == ["beta"]
+
+
+def test_focusing_a_session_whose_app_is_gone_does_not_raise(controller, monkeypatch):
+    from clawd_tank_menubar import popover as popover_mod
+    monkeypatch.setattr(popover_mod, "resolve_host_app", lambda pid: None)
+
+    controller.reload([session()])
+    controller._rows[0].view._on_click()  # must not raise
 
 
 def test_install_status_item_ui_detaches_the_menu_and_takes_over_clicks():

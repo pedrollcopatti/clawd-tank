@@ -407,7 +407,7 @@ async def test_session_order_created_on_tool_use_if_missing():
     assert d._session_order[0][0] == "aaa"
 
 
-# --- Task 2 new tests: display state v2 dict format ---
+# --- The snapshot pushed to the menu bar ---
 
 
 @pytest.mark.asyncio
@@ -417,7 +417,7 @@ async def test_snapshot_single_working_session():
     await d._handle_message({"event": "tool_use", "session_id": "aaa", "tool_name": "Edit"})
     assert snapshot(d) == [{
         "session_id": "aaa", "display_id": 1, "project": "", "state": "working",
-        "tool_name": "Edit", "subagents": 0,
+        "tool_name": "Edit", "subagents": 0, "pid": None,
         "last_event": d._session_states["aaa"]["last_event"],
     }]
 

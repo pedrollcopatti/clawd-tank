@@ -20,28 +20,53 @@ ICON_FILES = {
     "offline": "crab-offline",    # daemon thread died — not a session state
 }
 
-# Highest priority first. "waiting" outranks "working" because a session blocked
-# on a human is the only state that needs you to do something; this mirrors the
-# device-side ordering in ClawdDaemon._compute_display_state().
-_PRIORITY = (
-    ("error", {"error"}),
-    ("waiting", {"waiting"}),
-    # A tool failure ("confused") is a transient stumble, not an error worth its
-    # own status bar glyph — the popover row still shows it distinctly.
-    ("working", {"working", "confused"}),
-    ("thinking", {"thinking"}),
+# Most urgent first. One ladder drives both which crab shows in the menu bar and
+# which rows sort to the top of the popover, so the two can never disagree about
+# what deserves your attention.
+STATE_PRIORITY = (
+    "error",       # stopped with an API error
+    "waiting",     # blocked on you: a permission prompt or a question
+    "confused",    # a tool failed
+    "working",
+    "thinking",
+    "registered",  # the blink between SessionStart and the first real event
+    "idle",
 )
+
+# Session state -> the icon it shows. Several states share a glyph: a tool
+# failure is a stumble, not a status worth its own crab, and "registered" is
+# indistinguishable from idle to anyone looking at the menu bar.
+_STATE_ICONS = {
+    "error": "error",
+    "waiting": "waiting",
+    "confused": "working",
+    "working": "working",
+    "thinking": "thinking",
+    "registered": "idle",
+    "idle": "idle",
+}
+
+
+def state_rank(state: str) -> int:
+    """Sort key for a session state — lower is more urgent.
+
+    Unknown states sort last rather than raising: a future daemon could invent
+    one, and burying it is better than crashing the popover over it.
+    """
+    try:
+        return STATE_PRIORITY.index(state)
+    except ValueError:
+        return len(STATE_PRIORITY)
 
 
 def aggregate_state(snapshot: list[dict]) -> str:
     """Reduce every session's state to the one the status bar should show."""
     if not snapshot:
         return "none"
-    present = {s.get("state", "idle") for s in snapshot}
-    for name, states in _PRIORITY:
-        if present & states:
-            return name
-    return "idle"  # covers "idle" and the momentary "registered"
+    most_urgent = min(
+        (s.get("state", "idle") for s in snapshot), key=state_rank
+    )
+    return _STATE_ICONS.get(most_urgent, "idle")
 
 
 def status_title(snapshot: list[dict]) -> str:

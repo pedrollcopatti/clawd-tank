@@ -10,9 +10,12 @@ asyncio thread must marshal through AppHelper.callAfter first.
 """
 
 import logging
+import subprocess
 
 import AppKit
 import objc
+
+from .session_focus import activation_command, resolve_host_app, session_cwd
 
 from .session_row import (
     ROW_H,
@@ -140,7 +143,7 @@ class SessionPopoverController:
             AppKit.NSMakeRect(0, 0, ROW_W, natural_h)
         )
         for index, model in enumerate(self._models):
-            row = build_session_row(model)
+            row = build_session_row(model, on_click=self._click_handler_for(model))
             row.view.setFrameOrigin_(AppKit.NSMakePoint(0, index * ROW_H))
             container.addSubview_(row.view)
             self._rows.append(row)
@@ -184,6 +187,50 @@ class SessionPopoverController:
         summary.setFrame_(AppKit.NSMakeRect(ROW_W - 160, rows_h + 9, 150, 16))
         summary.setAutoresizingMask_(AppKit.NSViewMinXMargin)
         self._content.addSubview_(summary)
+
+    # --- Focusing a session's app ---
+
+    def _click_handler_for(self, model):
+        """A click handler for a row, or None if there's nothing to focus.
+
+        Resolution is deferred to click time rather than done here: it costs two
+        subprocess calls per session, and reload() runs on every snapshot push.
+        """
+        if not model.pid:
+            return None
+        return lambda: self._focus_session(model)
+
+    def _focus_session(self, model) -> None:
+        host = resolve_host_app(model.pid)
+        if host is None:
+            # Nothing to focus — a session over SSH, or one whose process just
+            # exited. Leave the popover open rather than acting on a stale row.
+            logger.info("No host app for %s (pid %s)", model.project, model.pid)
+            return
+
+        self.close()
+
+        # Two paths, deliberately. NSRunningApplication targets the exact PID,
+        # which is what disambiguates two copies of the same editor; `open` goes
+        # through LaunchServices, which works even when macOS refuses the direct
+        # activation because we aren't the active app. Activating an app that is
+        # already frontmost is a no-op, so doing both costs nothing.
+        app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(
+            host.pid
+        )
+        if app is not None:
+            app.activateWithOptions_(AppKit.NSApplicationActivateAllWindows)
+
+        try:
+            subprocess.Popen(
+                activation_command(host, session_cwd(model.pid)),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            logger.warning("Could not activate %s for %s", host.name, model.project)
+
+        logger.info("Focused %s in %s", model.project, host.name)
 
     def _settings_target(self):
         """A click handler whose 'left' action opens Settings."""

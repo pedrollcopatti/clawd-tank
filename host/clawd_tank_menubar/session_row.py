@@ -47,6 +47,79 @@ def load_sprite(name: str):
     return image
 
 
+class ClickableRowView(AppKit.NSView):
+    """A row that highlights under the pointer and reports clicks.
+
+    An NSButton spanning the row would swallow the label subviews' own drawing
+    and fight their colours; a plain view with mouseUp_ keeps the layout exactly
+    as it is and adds only the behaviour.
+    """
+
+    def isFlipped(self):
+        return True
+
+    def acceptsFirstMouse_(self, event):
+        # The popover isn't key when it first appears, so without this the first
+        # click after opening would only activate it and be thrown away.
+        return True
+
+    def hitTest_(self, point):
+        # The labels and sprite sit on top of the row; without this a click on
+        # the project name would land on an NSTextField and go nowhere.
+        inside = AppKit.NSPointInRect(
+            self.convertPoint_fromView_(point, self.superview()), self.bounds()
+        )
+        return self if inside else None
+
+    def resetCursorRects(self):
+        if getattr(self, "_on_click", None) is not None:
+            self.addCursorRect_cursor_(self.bounds(), AppKit.NSCursor.pointingHandCursor())
+
+    def updateTrackingAreas(self):
+        for area in list(self.trackingAreas()):
+            self.removeTrackingArea_(area)
+        options = (
+            AppKit.NSTrackingMouseEnteredAndExited
+            | AppKit.NSTrackingActiveInActiveApp
+            | AppKit.NSTrackingInVisibleRect
+        )
+        self.addTrackingArea_(
+            AppKit.NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
+                self.bounds(), options, self, None
+            )
+        )
+
+    def mouseEntered_(self, event):
+        if getattr(self, "_on_click", None) is None:
+            return
+        self.setHovered_(True)
+
+    def mouseExited_(self, event):
+        self.setHovered_(False)
+
+    def setHovered_(self, hovered):
+        self._hovered = bool(hovered)
+        self.setNeedsDisplay_(True)
+
+    def drawRect_(self, rect):
+        if not getattr(self, "_hovered", False):
+            return
+        AppKit.NSColor.controlAccentColor().colorWithAlphaComponent_(0.14).setFill()
+        AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            AppKit.NSInsetRect(self.bounds(), 6, 2), 6, 6
+        ).fill()
+
+    def mouseUp_(self, event):
+        handler = getattr(self, "_on_click", None)
+        if handler is None:
+            return
+        # Only if the pointer is still inside — dragging out of a row and
+        # releasing should cancel, as it does everywhere else on the system.
+        point = self.convertPoint_fromView_(event.locationInWindow(), None)
+        if AppKit.NSPointInRect(point, self.bounds()):
+            handler()
+
+
 def _label(size, color, weight=None):
     field = AppKit.NSTextField.labelWithString_("")
     field.setFont_(
@@ -100,11 +173,19 @@ class SessionRowView:
         self._elapsed.setStringValue_(text)
 
 
-def build_session_row(model) -> SessionRowView:
-    """Build one row and populate it from `model`."""
-    view = AppKit.NSView.alloc().initWithFrame_(
+def build_session_row(model, on_click=None) -> SessionRowView:
+    """Build one row and populate it from `model`.
+
+    `on_click` is called with no arguments when the row is clicked. Pass None
+    for a session that can't be focused (no PID yet, or no GUI app hosting it) —
+    the row then draws no hover state and shows no pointing-hand cursor, so it
+    never looks clickable when it isn't.
+    """
+    view = ClickableRowView.alloc().initWithFrame_(
         AppKit.NSMakeRect(0, 0, ROW_W, ROW_H)
     )
+    view._on_click = on_click
+    view._hovered = False
     view.setAutoresizingMask_(AppKit.NSViewWidthSizable)
 
     # Accent stripe — hidden unless the session wants something from you.

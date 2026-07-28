@@ -72,6 +72,11 @@ def build_session_snapshot(
             "state": state.get("state", "idle"),
             "tool_name": state.get("tool_name", ""),
             "subagents": len(state.get("subagents", ())),
+            # The long-lived `claude` PID, so the UI can find the terminal or
+            # editor hosting this session. None for a session restored from
+            # disk that hasn't emitted an event yet: session_store drops PIDs on
+            # load, because a recycled one would look alive to the liveness check.
+            "pid": state.get("pid"),
             # Wall clock, not an elapsed time: the UI derives "2m 14s" on its own
             # tick. An age field here would make every snapshot differ from the
             # last and defeat the no-op suppression in _push_snapshot_soon().

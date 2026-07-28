@@ -10,6 +10,8 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+from .status_icon import state_rank
+
 # Tool -> sprite. Mirrors the device's animation choice so a session looks the
 # same in the popover as it does on hardware, but it lives here now: which crab
 # to draw is a UI decision, and the two are free to diverge.
@@ -56,6 +58,7 @@ class RowModel:
     sprite: str
     subagents: int
     accent: Optional[str] = None
+    pid: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -141,7 +144,12 @@ def _accent_for(state: str) -> Optional[str]:
 
 
 def build_row_models(snapshot: list[dict], now: Optional[float] = None) -> list[RowModel]:
-    """One RowModel per session, in the daemon's arrival order.
+    """One RowModel per session, most urgent first.
+
+    Sessions blocked on you sort to the top, so the one you have to answer is
+    never buried under busier-looking work. The sort is stable, so sessions at
+    the same urgency keep the daemon's arrival order and rows don't shuffle
+    underneath the pointer on every refresh.
 
     Long project names are left intact: truncation is the view's job, since only
     it knows the pixel width available.
@@ -149,7 +157,7 @@ def build_row_models(snapshot: list[dict], now: Optional[float] = None) -> list[
     if now is None:
         now = time.time()
     rows = []
-    for session in snapshot:
+    for session in sorted(snapshot, key=lambda s: state_rank(s.get("state", "idle"))):
         state = session.get("state", "idle")
         tool_name = session.get("tool_name", "")
         subagents = session.get("subagents", 0)
@@ -161,6 +169,7 @@ def build_row_models(snapshot: list[dict], now: Optional[float] = None) -> list[
             sprite=_sprite_for(state, tool_name, subagents),
             subagents=subagents,
             accent=_accent_for(state),
+            pid=session.get("pid"),
         ))
     return rows
 

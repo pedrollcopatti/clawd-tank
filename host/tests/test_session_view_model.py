@@ -122,9 +122,74 @@ def test_row_carries_project_detail_elapsed_and_sprite():
     assert row.accent is None
 
 
-def test_rows_follow_snapshot_order():
+def test_rows_keep_arrival_order_when_equally_urgent():
     snapshot = [session(session_id=f"s{i}", project=f"p{i}") for i in range(3)]
     assert [r.project for r in build_row_models(snapshot, now=NOW)] == ["p0", "p1", "p2"]
+
+
+# --- Ordering by urgency ---
+
+
+def test_waiting_sessions_sort_to_the_top():
+    """The one you have to answer must not be buried under busier work."""
+    snapshot = [
+        session(session_id="a", project="busy", state="working"),
+        session(session_id="b", project="quiet", state="idle"),
+        session(session_id="c", project="blocked", state="waiting"),
+    ]
+    assert [r.project for r in build_row_models(snapshot, now=NOW)] == [
+        "blocked", "busy", "quiet",
+    ]
+
+
+def test_full_urgency_ladder():
+    snapshot = [
+        session(session_id="1", project="idle", state="idle"),
+        session(session_id="2", project="thinking", state="thinking"),
+        session(session_id="3", project="working", state="working"),
+        session(session_id="4", project="confused", state="confused"),
+        session(session_id="5", project="waiting", state="waiting"),
+        session(session_id="6", project="error", state="error"),
+    ]
+    assert [r.project for r in build_row_models(snapshot, now=NOW)] == [
+        "error", "waiting", "confused", "working", "thinking", "idle",
+    ]
+
+
+def test_ordering_is_stable_within_a_priority_band():
+    """Rows must not shuffle under the pointer between refreshes."""
+    snapshot = [
+        session(session_id=f"w{i}", project=f"w{i}", state="working")
+        for i in range(4)
+    ] + [session(session_id="blocked", project="blocked", state="waiting")]
+
+    first = [r.project for r in build_row_models(snapshot, now=NOW)]
+    for _ in range(5):
+        assert [r.project for r in build_row_models(snapshot, now=NOW)] == first
+    assert first == ["blocked", "w0", "w1", "w2", "w3"]
+
+
+def test_unknown_state_sorts_last_rather_than_raising():
+    snapshot = [
+        session(session_id="a", project="mystery", state="something-new"),
+        session(session_id="b", project="normal", state="idle"),
+    ]
+    assert [r.project for r in build_row_models(snapshot, now=NOW)] == [
+        "normal", "mystery",
+    ]
+
+
+def test_row_order_agrees_with_the_menu_bar_icon():
+    """The first row and the crab must never disagree about what matters most."""
+    from clawd_tank_menubar.status_icon import aggregate_state
+
+    snapshot = [
+        session(session_id="a", project="busy", state="working"),
+        session(session_id="b", project="blocked", state="waiting"),
+    ]
+    rows = build_row_models(snapshot, now=NOW)
+    assert rows[0].project == "blocked"
+    assert aggregate_state(snapshot) == "waiting"
 
 
 @pytest.mark.parametrize("state,sprite,accent", [
