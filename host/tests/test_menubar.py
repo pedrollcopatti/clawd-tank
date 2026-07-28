@@ -14,33 +14,40 @@ class FakeObserver:
     """Minimal observer for testing daemon integration."""
     def __init__(self):
         self.connection_changes = []
-        self.notification_changes = []
+        self.snapshots = []
 
     def on_connection_change(self, connected: bool, transport: str = "") -> None:
         self.connection_changes.append((connected, transport))
 
-    def on_notification_change(self, count: int) -> None:
-        self.notification_changes.append(count)
+    def on_sessions_change(self, snapshot: list[dict]) -> None:
+        self.snapshots.append(snapshot)
 
 
 @pytest.mark.asyncio
-async def test_observer_notification_count_stays_zero():
-    """Banner cards are disabled, so the observer's notification count never rises
-    above 0 — the menu-bar icon stays on its 'connected' (not 'notifications')
-    state regardless of add/dismiss traffic."""
+async def test_observer_sees_sessions_appear_and_disappear():
+    """The menu bar drives its icon off the session snapshot, so add/dismiss
+    traffic has to show up there — not as a notification count."""
+    import asyncio
+    from clawd_tank_daemon import daemon as daemon_mod
+
     obs = FakeObserver()
     daemon = ClawdDaemon(observer=obs)
+    daemon_mod.NOTIFY_COALESCE_SECS = 0.01
+    try:
+        await daemon._handle_message(
+            {"event": "add", "hook": "Stop", "session_id": "s1", "project": "p1",
+             "message": "m"}
+        )
+        await asyncio.sleep(0.05)
+        await daemon._handle_message(
+            {"event": "dismiss", "hook": "SessionEnd", "session_id": "s1"}
+        )
+        await asyncio.sleep(0.05)
+    finally:
+        daemon_mod.NOTIFY_COALESCE_SECS = 0.15
 
-    await daemon._handle_message(
-        {"event": "add", "session_id": "s1", "project": "p", "message": "m"}
-    )
-    await daemon._handle_message(
-        {"event": "add", "session_id": "s2", "project": "p", "message": "m"}
-    )
-    await daemon._handle_message({"event": "dismiss", "session_id": "s1"})
-    await daemon._handle_message({"event": "dismiss", "session_id": "s2"})
-
-    assert obs.notification_changes == [0, 0, 0, 0]
+    assert [len(s) for s in obs.snapshots] == [1, 0]
+    assert obs.snapshots[0][0]["project"] == "p1"
 
 
 @pytest.mark.asyncio

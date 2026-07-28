@@ -38,7 +38,7 @@ class ClawdTankApp(rumps.App, DaemonObserver):
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_ready = threading.Event()
         self._transport_status: dict[str, bool] = {}
-        self._notification_count = 0
+        self._sessions: list[dict] = []
         self._current_config: dict = {}
         self._sim_process = None
 
@@ -219,9 +219,13 @@ class ClawdTankApp(rumps.App, DaemonObserver):
             )
         self._schedule_menu_update()
 
-    def on_notification_change(self, count: int) -> None:
-        self._notification_count = count
-        self._schedule_menu_update()
+    def on_sessions_change(self, snapshot: list[dict]) -> None:
+        """Called on the daemon's asyncio thread with every active session."""
+        self._schedule_main(self._apply_snapshot, snapshot)
+
+    def _apply_snapshot(self, snapshot: list[dict]) -> None:
+        """Main thread. Store the snapshot; the icon and popover read it."""
+        self._sessions = snapshot
 
     # --- Config ---
 
@@ -233,13 +237,17 @@ class ClawdTankApp(rumps.App, DaemonObserver):
                 self._current_config = config
                 self._schedule_menu_update()
 
-    def _schedule_menu_update(self):
-        """Thread-safe menu update via PyObjC main thread dispatch."""
+    def _schedule_main(self, fn, *args):
+        """Run fn on the main thread. Safe to call from the daemon's thread."""
         try:
             from PyObjCTools.AppHelper import callAfter
-            callAfter(self._update_menu_state)
+            callAfter(fn, *args)
         except ImportError:
-            self._update_menu_state()
+            fn(*args)
+
+    def _schedule_menu_update(self):
+        """Thread-safe menu update via PyObjC main thread dispatch."""
+        self._schedule_main(self._update_menu_state)
 
     @rumps.timer(30)
     def _health_check(self, _):
@@ -288,10 +296,7 @@ class ClawdTankApp(rumps.App, DaemonObserver):
 
         # --- Icon and global state ---
         if connected:
-            if self._notification_count > 0:
-                self.icon = self._icon_path("crab-notifications")
-            else:
-                self.icon = self._icon_path("crab-connected")
+            self.icon = self._icon_path("crab-connected")
 
             brightness = self._current_config.get("brightness", 102)
             self._brightness_slider.set_value(brightness)

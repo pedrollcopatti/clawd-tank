@@ -66,12 +66,53 @@ PID_DEDUP_FRESHNESS_SECONDS = 60.0
 # never reports range/sleep disconnects, so without this probe a dead link is
 # never detected and the daemon never re-scans. Detection lag ~= this interval.
 BLE_LIVENESS_INTERVAL_SECS = 20.0
+# Trailing-edge debounce before pushing a session snapshot to the observer. A
+# single Claude turn fires PreToolUse/PostToolUse back to back, and a handful of
+# parallel sessions produce a dozen socket messages in well under 100 ms —
+# rebuilding the UI once per event would thrash the main thread. 150 ms is below
+# the perceptual threshold and collapses a burst into one rebuild.
+NOTIFY_COALESCE_SECS = 0.15
+
+
+def build_session_snapshot(
+    session_states: dict[str, dict],
+    session_order: list[tuple[str, int]],
+) -> list[dict]:
+    """Build a UI-shaped view of every session, in arrival order.
+
+    Unlike _compute_display_state(), which is device-shaped, this keeps
+    session_id/project/tool_name, is not capped at four sessions, and does no
+    animation mapping — picking a sprite is the UI's business.
+
+    Returns freshly built dicts of JSON-safe scalars. Never hand a caller a
+    reference into session_states: it is mutated on the daemon's asyncio thread
+    while AppKit reads the snapshot on the main thread, and it holds a set. The
+    copy is the thread-safety story.
+    """
+    snapshot = []
+    for session_id, display_id in session_order:
+        state = session_states.get(session_id)
+        if state is None:
+            continue
+        snapshot.append({
+            "session_id": session_id,
+            "display_id": display_id,
+            "project": state.get("project", ""),
+            "state": state.get("state", "idle"),
+            "tool_name": state.get("tool_name", ""),
+            "subagents": len(state.get("subagents", ())),
+            # Wall clock, not an elapsed time: the UI derives "2m 14s" on its own
+            # tick. An age field here would make every snapshot differ from the
+            # last and defeat the no-op suppression in _push_snapshot_soon().
+            "last_event": state.get("last_event", 0.0),
+        })
+    return snapshot
 
 
 @runtime_checkable
 class DaemonObserver(Protocol):
     def on_connection_change(self, connected: bool, transport: str = "") -> None: ...
-    def on_notification_change(self, count: int) -> None: ...
+    def on_sessions_change(self, snapshot: list[dict]) -> None: ...
 
 
 def _stop_existing_daemon() -> bool:
@@ -194,6 +235,8 @@ class ClawdDaemon:
         self._transport_versions: dict[str, int] = {}  # transport_name → protocol version
         self._session_staleness_timeout: float = 600.0
         self._sounds_enabled: bool = True
+        self._last_snapshot: list[dict] = []
+        self._snapshot_task: Optional[asyncio.Task] = None
         # _evict_stale_sessions() removed — Task 6 startup prune covers this.
 
     async def _handle_message(self, msg: dict) -> None:
@@ -324,14 +367,18 @@ class ClawdDaemon:
         # the display-state broadcast below; any session-state side effects of an
         # add/dismiss were already applied in _update_session_state.
 
-        if self._observer:
-            self._observer.on_notification_change(len(self._active_notifications))
-
         if event != "compact":
             await self._broadcast_display_state_if_changed()
 
         if changed:
             self._persist_sessions()
+
+        # Unconditional: the UI cares about things the device payload can't see.
+        # Read → Grep both map to the same "debugger" animation, so the device
+        # state is byte-identical while the popover's tool text changed; a project
+        # name can also arrive after the session was created. _push_snapshot_soon()
+        # owns the "did anything actually change?" question.
+        self._notify_sessions_changed()
 
     def _compute_display_state(self) -> dict:
         """Derive the display state from all active session states."""
@@ -522,6 +569,38 @@ class ClawdDaemon:
             self._session_order = [(sid, did) for sid, did in self._session_order if sid not in stale]
             self._persist_sessions()
 
+    def _notify_sessions_changed(self) -> None:
+        """Schedule a coalesced session snapshot push. Safe to call unconditionally.
+
+        A pending push always reads the latest state when it fires, so callers
+        never need to check whether one is already in flight.
+        """
+        if self._observer is None:
+            return
+        if self._snapshot_task is not None and not self._snapshot_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop — the daemon is constructed on the main thread
+            # before run() starts one. run() pushes the restored state itself.
+            # Check first rather than letting create_task() raise, which would
+            # leave the coroutine object unawaited.
+            return
+        self._snapshot_task = loop.create_task(self._push_snapshot_soon())
+
+    async def _push_snapshot_soon(self) -> None:
+        await asyncio.sleep(NOTIFY_COALESCE_SECS)
+        snapshot = build_session_snapshot(self._session_states, self._session_order)
+        if snapshot == self._last_snapshot:
+            return
+        self._last_snapshot = snapshot
+        try:
+            self._observer.on_sessions_change(snapshot)
+        except Exception:
+            # An observer that raises must never take down message handling.
+            logger.exception("Observer on_sessions_change raised")
+
     def _persist_sessions(self) -> None:
         save_sessions(
             self._session_states,
@@ -556,6 +635,9 @@ class ClawdDaemon:
             await asyncio.sleep(30)
             self._evict_stale_sessions()
             await self._broadcast_display_state_if_changed()
+            # _evict_stale_sessions() mutates state and returns nothing, so this
+            # is the only place the UI can learn a session went away.
+            self._notify_sessions_changed()
 
     def _check_liveness(self) -> list[str]:
         """Synchronous half of the liveness check — separated for testability.
@@ -592,6 +674,7 @@ class ClawdDaemon:
             evicted = self._check_liveness()
             if evicted:
                 await self._broadcast_display_state_if_changed()
+                self._notify_sessions_changed()
 
     async def _probe_ble_liveness(self) -> None:
         """One liveness sweep: round-trip probe every connected, probe-capable
@@ -788,6 +871,14 @@ class ClawdDaemon:
             except asyncio.CancelledError:
                 pass
 
+        if self._snapshot_task is not None and not self._snapshot_task.done():
+            self._snapshot_task.cancel()
+            try:
+                await self._snapshot_task
+            except asyncio.CancelledError:
+                pass
+            self._snapshot_task = None
+
         for task in self._sender_tasks.values():
             task.cancel()
         for task in self._sender_tasks.values():
@@ -879,6 +970,10 @@ class ClawdDaemon:
                 loop.add_signal_handler(sig, lambda: asyncio.create_task(self._shutdown()))
 
         await self._socket.start()
+
+        # Push the state restored from sessions.json so the UI isn't empty on
+        # launch while Claude sessions are already running.
+        self._notify_sessions_changed()
 
         for name in self._transports:
             # Each sender handles its own connect via ensure_connected()

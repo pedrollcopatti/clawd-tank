@@ -8,13 +8,13 @@ from clawd_tank_daemon.daemon import ClawdDaemon
 class FakeObserver:
     def __init__(self):
         self.connection_changes = []
-        self.notification_changes = []
+        self.snapshots = []
 
     def on_connection_change(self, connected: bool, transport: str = "") -> None:
         self.connection_changes.append((connected, transport))
 
-    def on_notification_change(self, count: int) -> None:
-        self.notification_changes.append(count)
+    def on_sessions_change(self, snapshot: list[dict]) -> None:
+        self.snapshots.append(snapshot)
 
 
 # --- Notification banner cards are disabled ---
