@@ -45,21 +45,10 @@ jobs:
           pip install -r requirements.txt
           pip install py2app
 
-      - name: Generate app icon
-        working-directory: host
-        run: |
-          mkdir -p AppIcon.iconset
-          for size in 16 32 64 128 256 512; do
-            sips -z $size $size clawd_tank_menubar/icons/crab-connected.png \
-              --out AppIcon.iconset/icon_${size}x${size}.png
-          done
-          for size in 16 32 64 128 256; do
-            double=$((size * 2))
-            sips -z $double $double clawd_tank_menubar/icons/crab-connected.png \
-              --out "AppIcon.iconset/icon_${size}x${size}@2x.png"
-          done
-          iconutil -c icns AppIcon.iconset -o AppIcon.icns
-          rm -rf AppIcon.iconset
+# The app icon is the committed host/AppIcon.icns, which setup.py already
+# declares as "iconfile". CI used to regenerate it here by sips-upscaling a
+# 16x16 status bar PNG to 512x512, which produced a blurry icon from art that
+# was never meant for the Dock.
 
       - name: Build .app with py2app
         working-directory: host

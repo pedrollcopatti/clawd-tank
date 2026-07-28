@@ -16,6 +16,7 @@ from clawd_tank_daemon.sim_client import SimClient, SIM_DEFAULT_PORT
 from . import hooks, launchd
 from .preferences import load_preferences, save_preferences
 from .slider import create_slider_menu_item
+from .status_icon import aggregate_state, icon_name, status_title
 from .version import get_version
 
 logger = logging.getLogger("clawd-tank.menubar")
@@ -152,10 +153,11 @@ class ClawdTankApp(rumps.App, DaemonObserver):
             self._quit_item,
         ]
 
-        # Set initial icon and hide text title so only the icon shows in the menu bar
-        self.icon = self._icon_path("crab-disconnected")
-        self.template = True
-        self.title = ""
+        # Colour, not a template image: template images are drawn from alpha
+        # alone, which flattens the crab to a featureless blob and loses the red
+        # "!" and the error stars — the whole point of the icon.
+        self.template = False
+        self._update_status_item()
         self._update_menu_state()
 
     @property
@@ -224,8 +226,20 @@ class ClawdTankApp(rumps.App, DaemonObserver):
         self._schedule_main(self._apply_snapshot, snapshot)
 
     def _apply_snapshot(self, snapshot: list[dict]) -> None:
-        """Main thread. Store the snapshot; the icon and popover read it."""
+        """Main thread. Store the snapshot and refresh what it drives."""
         self._sessions = snapshot
+        self._update_status_item()
+
+    def _update_status_item(self) -> None:
+        """Set the status bar icon and title from the current session state.
+
+        The icon answers "what are my Claude sessions doing?" — not "is the
+        device connected?", which is a detail of one optional transport and
+        belongs in the menu.
+        """
+        state = "offline" if not self._daemon_alive else aggregate_state(self._sessions)
+        self.icon = self._icon_path(icon_name(state))
+        self.title = "" if state == "offline" else status_title(self._sessions)
 
     # --- Config ---
 
@@ -253,12 +267,12 @@ class ClawdTankApp(rumps.App, DaemonObserver):
     def _health_check(self, _):
         """Periodic check to detect daemon thread death."""
         if not self._daemon_alive:
+            self._update_status_item()
             self._update_menu_state()
 
     def _update_menu_state(self):
         """Update all menu items based on current state. Must run on main thread."""
         if not self._daemon_alive:
-            self.icon = self._icon_path("crab-disconnected")
             return
         connected = self._connected
 
@@ -294,10 +308,8 @@ class ClawdTankApp(rumps.App, DaemonObserver):
             self._sim_window_toggle.set_callback(self._on_toggle_sim_window)
             self._sim_pinned_toggle.set_callback(self._on_toggle_sim_pinned)
 
-        # --- Icon and global state ---
+        # --- Device config controls (only meaningful with a device attached) ---
         if connected:
-            self.icon = self._icon_path("crab-connected")
-
             brightness = self._current_config.get("brightness", 102)
             self._brightness_slider.set_value(brightness)
             self._brightness_slider.set_enabled(True)
@@ -307,9 +319,7 @@ class ClawdTankApp(rumps.App, DaemonObserver):
             for key, item in self._session_timeout_menu.items():
                 item.state = (item._seconds == timeout)
         else:
-            self.icon = self._icon_path("crab-disconnected")
             self._brightness_slider.set_enabled(False)
-        self.title = ""
 
     def _icon_path(self, name: str) -> Optional[str]:
         """Return path to icon file, or None if not found."""
