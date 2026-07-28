@@ -32,8 +32,12 @@ void sim_display_shutdown(void);
 /** Signal that the window should close. */
 void sim_display_set_quit(void);
 
-/** Enforce aspect ratio after a window resize event. */
-void sim_display_enforce_aspect_ratio(void);
+/** Handle a window resize: recompute the dynamic LVGL width from the window's
+ *  aspect ratio (height stays fixed). Returns true if the resolution changed. */
+bool sim_display_handle_resize(void);
+
+/** Log current window size + on-screen position (for tuning the fixed strip). */
+void sim_display_log_geometry(const char *reason);
 
 /** Set window always-on-top (pinned). */
 void sim_display_set_pinned(bool pinned);

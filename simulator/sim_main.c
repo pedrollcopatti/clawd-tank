@@ -400,9 +400,18 @@ static void handle_sdl_events(void)
 {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
-        if (e.type == SDL_WINDOWEVENT &&
-            e.window.event == SDL_WINDOWEVENT_RESIZED) {
-            sim_display_enforce_aspect_ratio();
+        if (e.type == SDL_WINDOWEVENT) {
+            if (e.window.event == SDL_WINDOWEVENT_RESIZED ||
+                e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+                /* Free-aspect resize: recompute the dynamic LVGL width, then
+                 * re-stretch the scene to fill the new panel width. */
+                if (sim_display_handle_resize()) {
+                    ui_manager_relayout();
+                }
+                sim_display_log_geometry("resize");
+            } else if (e.window.event == SDL_WINDOWEVENT_MOVED) {
+                sim_display_log_geometry("move");
+            }
         }
         if (e.type == SDL_QUIT) {
             if (opt_listen_port > 0) {
