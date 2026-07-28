@@ -419,13 +419,21 @@ class ClawdDaemon:
             new_state = "waiting" if tool_name == ASK_USER_QUESTION_TOOL else "working"
             self._enter_state(session_id, new_state, tool_name, now, create=True)
         elif event == "tool_done":
-            # PostToolUse (registered scoped to AskUserQuestion): the user answered,
-            # so clear the waiting alert and let Claude resume thinking. Never creates
-            # a session — a PostToolUse with no prior PreToolUse is ignored.
+            # PostToolUse (registered for every tool): the human responded, so
+            # clear the "waiting" alert and let Claude resume. Two cases:
+            #   - AskUserQuestion answered  → Claude reads the answer → thinking
+            #   - a permission-gated tool the user approved finished running →
+            #     Claude is back at work → working (with that tool's animation)
+            # Never creates a session — a PostToolUse with no prior PreToolUse is
+            # ignored so a late event can't resurrect an ended session.
             cur_s = self._session_states.get(session_id)
             if cur_s is not None:
-                if tool_name == ASK_USER_QUESTION_TOOL and cur_s["state"] == "waiting":
-                    cur_s["state"] = "thinking"
+                if cur_s["state"] == "waiting":
+                    if tool_name == ASK_USER_QUESTION_TOOL:
+                        cur_s["state"] = "thinking"
+                    else:
+                        cur_s["state"] = "working"
+                        cur_s["tool_name"] = tool_name
                 cur_s["last_event"] = now
         elif event == "permission":
             # PermissionRequest: Claude is blocked waiting for the human to approve a

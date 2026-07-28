@@ -9,8 +9,6 @@ import stat
 import textwrap
 from pathlib import Path
 
-from clawd_tank_daemon.protocol import ASK_USER_QUESTION_TOOL
-
 logger = logging.getLogger("clawd-tank.hooks")
 
 CLAWD_DIR = Path.home() / ".clawd-tank"
@@ -220,14 +218,15 @@ HOOKS_CONFIG = {
     "PreToolUse": [
         {"hooks": [{"type": "command", "command": HOOK_COMMAND}]}
     ],
-    # Scoped to AskUserQuestion only: the sole purpose is clearing the "waiting
-    # for input" alert when the user answers. Registering PostToolUse for every
-    # tool would double the device's event/BLE traffic for no added value.
+    # Fires for every tool: clears the "waiting" alert once the human has
+    # responded — both when an AskUserQuestion is answered and when a
+    # permission-gated tool the user approved finishes running (there is no
+    # "permission granted" hook, so the gated tool's PostToolUse is the earliest
+    # signal that work resumed). tool_done carries no BLE payload and only
+    # re-broadcasts when it actually clears a waiting session, so the extra
+    # PostToolUse traffic stays off the device.
     "PostToolUse": [
-        {
-            "matcher": ASK_USER_QUESTION_TOOL,
-            "hooks": [{"type": "command", "command": HOOK_COMMAND}],
-        }
+        {"hooks": [{"type": "command", "command": HOOK_COMMAND}]}
     ],
     # Claude is blocked waiting for the user to approve a tool → waiting/alert.
     "PermissionRequest": [

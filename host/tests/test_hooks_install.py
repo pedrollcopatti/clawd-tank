@@ -99,7 +99,7 @@ def test_install_preserves_unrelated_settings_keys(settings_path):
 
 
 def test_install_preserves_user_postooluse_with_different_matcher(settings_path):
-    """Our AskUserQuestion PostToolUse hook must coexist with a user's Bash one."""
+    """Our all-tools (no-matcher) PostToolUse hook must coexist with a user's Bash one."""
     settings_path.write_text(json.dumps({
         "hooks": {
             "PostToolUse": [
@@ -110,10 +110,10 @@ def test_install_preserves_user_postooluse_with_different_matcher(settings_path)
     install_hooks()
     groups = _read(settings_path)["hooks"]["PostToolUse"]
     user_group = next((g for g in groups if g.get("matcher") == "Bash"), None)
-    our_group = next((g for g in groups if g.get("matcher") == "AskUserQuestion"), None)
+    our_group = next((g for g in groups if g.get("matcher") in (None, "")), None)
     assert user_group is not None, "user's Bash PostToolUse group was removed"
     assert any(h["command"] == "/my/bash/hook" for h in user_group["hooks"])
-    assert our_group is not None, "our AskUserQuestion PostToolUse group missing"
+    assert our_group is not None, "our all-tools PostToolUse group missing"
     assert any(HOOK_COMMAND in h["command"] for h in our_group["hooks"])
 
 
@@ -203,13 +203,14 @@ def test_are_hooks_installed_false_on_empty_settings(settings_path):
 
 
 def test_install_prunes_stale_our_group_on_matcher_change(settings_path):
-    """An older install registered PostToolUse with NO matcher; the current config
-    scopes it to AskUserQuestion. Install must drop the stale wildcard group, not
-    leave it firing the notify script on every tool."""
+    """An older install scoped our PostToolUse to AskUserQuestion; the current
+    config fires it for every tool (no matcher). Install must drop the stale
+    scoped group and leave a single no-matcher group."""
     settings_path.write_text(json.dumps({
         "hooks": {
             "PostToolUse": [
-                {"hooks": [{"type": "command", "command": HOOK_COMMAND}]}  # stale, no matcher
+                {"matcher": "AskUserQuestion",
+                 "hooks": [{"type": "command", "command": HOOK_COMMAND}]}  # stale, scoped
             ]
         }
     }))
@@ -217,8 +218,8 @@ def test_install_prunes_stale_our_group_on_matcher_change(settings_path):
     groups = _read(settings_path)["hooks"]["PostToolUse"]
     our_groups = [g for g in groups
                   if any(HOOK_COMMAND in h.get("command", "") for h in g.get("hooks", []))]
-    assert len(our_groups) == 1, "stale wildcard PostToolUse group was not pruned"
-    assert our_groups[0].get("matcher") == "AskUserQuestion"
+    assert len(our_groups) == 1, "stale AskUserQuestion PostToolUse group was not pruned"
+    assert our_groups[0].get("matcher") in (None, "")
 
 
 def test_are_hooks_installed_false_on_stale_our_group(settings_path):
@@ -242,9 +243,9 @@ def test_install_self_heals_stale_group(settings_path):
     settings_path.write_text(json.dumps(settings))
     install_hooks()
     groups = _read(settings_path)["hooks"]["PostToolUse"]
-    matchers = sorted(g.get("matcher") for g in groups
+    matchers = sorted((g.get("matcher") or "") for g in groups
                       if any(HOOK_COMMAND in h.get("command", "") for h in g["hooks"]))
-    assert matchers == ["AskUserQuestion"]
+    assert matchers == [""]
     assert are_hooks_installed() is True
 
 

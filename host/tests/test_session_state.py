@@ -1032,8 +1032,9 @@ async def test_tool_done_for_unknown_session_does_not_create_it():
 
 
 @pytest.mark.asyncio
-async def test_tool_done_non_askuserquestion_leaves_state():
-    """tool_done for any other tool just refreshes liveness, never changes state."""
+async def test_tool_done_non_askuserquestion_leaves_non_waiting_state():
+    """tool_done for a tool on a session that is NOT waiting just refreshes
+    liveness, never changes state."""
     d = make_daemon()
     d._session_states["s1"] = {"state": "working", "last_event": time.time()}
     await d._handle_message({
@@ -1124,6 +1125,24 @@ async def test_permission_waiting_clears_on_stop():
         "event": "add", "hook": "Stop", "session_id": "s1", "project": "p", "message": "x",
     })
     assert d._session_states["s1"]["state"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_permission_waiting_clears_when_gated_tool_finishes():
+    """Bug fix: after the user approves a permission-gated tool, that tool runs
+    and emits PostToolUse (now registered for all tools). The alert must clear to
+    'working' right then — not linger until some later tool_use or Stop while the
+    approved tool is still running."""
+    d = make_daemon()
+    # PreToolUse creates the session and marks it working...
+    await d._handle_message({"event": "tool_use", "session_id": "s1", "tool_name": "Bash"})
+    # ...then the permission prompt blocks it on the human.
+    await d._handle_message({"event": "permission", "session_id": "s1", "tool_name": "Bash"})
+    assert d._session_states["s1"]["state"] == "waiting"
+    # The user approves; the gated tool finishes → the alert clears.
+    await d._handle_message({"event": "tool_done", "session_id": "s1", "tool_name": "Bash"})
+    assert d._session_states["s1"]["state"] == "working"
+    assert d._session_states["s1"]["tool_name"] == "Bash"
 
 
 # --- PostToolUseFailure → confused (a tool genuinely errored) ---
