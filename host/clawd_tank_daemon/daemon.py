@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -45,6 +46,17 @@ def _tool_to_anim(tool_name: str) -> str:
     if tool_name and tool_name.startswith("mcp__"):
         return "beacon"
     return TOOL_ANIMATION_MAP.get(tool_name, "typing")
+
+
+# macOS alert sounds (played via `afplay`). Two cues:
+#   - "attention": Claude needs you — approve a command (PermissionRequest) or
+#                  answer a question (AskUserQuestion) → session enters "waiting".
+#   - "done":      Claude finished its turn / stopped thinking → Stop hook.
+# Swap the .aiff paths to change the sounds (see /System/Library/Sounds/).
+ALERT_SOUNDS = {
+    "attention": "/System/Library/Sounds/Submarine.aiff",
+    "done": "/System/Library/Sounds/Glass.aiff",
+}
 
 
 PID_PATH = Path.home() / ".clawd-tank" / "daemon.pid"
@@ -181,6 +193,7 @@ class ClawdDaemon:
         self._last_display_state: dict = {"status": "sleeping"}
         self._transport_versions: dict[str, int] = {}  # transport_name → protocol version
         self._session_staleness_timeout: float = 600.0
+        self._sounds_enabled: bool = True
         # _evict_stale_sessions() removed — Task 6 startup prune covers this.
 
     async def _handle_message(self, msg: dict) -> None:
@@ -249,11 +262,26 @@ class ClawdDaemon:
                     self._session_order = [(s, d) for s, d in self._session_order if s != sid]
                     self._active_notifications.pop(sid, None)
 
+        prev_sound_state = (
+            self._session_states.get(session_id, {}).get("state") if session_id else None
+        )
+
         changed = self._update_session_state(
             event, hook, session_id,
             msg.get("agent_id", ""), msg.get("tool_name", ""),
             pid=msg.get("pid"),
         )
+
+        # --- Alert sounds ---
+        # "attention": session just entered the waiting state (PermissionRequest
+        # or AskUserQuestion) — Claude needs the user to approve/answer.
+        if session_id:
+            new_sound_state = self._session_states.get(session_id, {}).get("state")
+            if new_sound_state == "waiting" and prev_sound_state != "waiting":
+                self._play_alert_sound("attention")
+        # "done": Claude finished its turn / stopped thinking (Stop hook).
+        if event == "add" and hook == "Stop":
+            self._play_alert_sound("done")
 
         # Store project name after session state is created
         if project and session_id and session_id in self._session_states:
@@ -591,6 +619,27 @@ class ClawdDaemon:
     def set_session_timeout(self, seconds: int) -> None:
         self._session_staleness_timeout = float(seconds)
         logger.info("Session staleness timeout set to %ds", seconds)
+
+    def set_sounds_enabled(self, enabled: bool) -> None:
+        self._sounds_enabled = bool(enabled)
+        logger.info("Alert sounds %s", "enabled" if enabled else "disabled")
+
+    def _play_alert_sound(self, kind: str) -> None:
+        """Fire-and-forget macOS alert sound. Never blocks or raises."""
+        if not self._sounds_enabled:
+            return
+        path = ALERT_SOUNDS.get(kind)
+        if not path or not os.path.exists(path):
+            return
+        try:
+            subprocess.Popen(
+                ["afplay", path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            logger.info("Played alert sound: %s", kind)
+        except Exception:
+            logger.debug("Failed to play alert sound '%s'", kind, exc_info=True)
 
     def _on_transport_connect(self, name: str) -> None:
         """Called by a transport client on successful connection."""

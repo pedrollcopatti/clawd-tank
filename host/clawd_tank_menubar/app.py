@@ -104,6 +104,13 @@ class ClawdTankApp(rumps.App, DaemonObserver):
                 item.state = True
             self._session_timeout_menu.add(item)
 
+        # Alert sounds toggle
+        self._sounds_toggle = rumps.MenuItem(
+            "Alert Sounds",
+            callback=self._on_toggle_sounds,
+        )
+        self._sounds_toggle.state = prefs.get("sounds_enabled", True)
+
         # Claude Code hooks
         self._hooks_item = rumps.MenuItem(
             "Install Claude Code Hooks",
@@ -136,6 +143,7 @@ class ClawdTankApp(rumps.App, DaemonObserver):
             None,
             self._brightness_item,
             self._session_timeout_menu,
+            self._sounds_toggle,
             None,
             self._hooks_item,
             self._login_item,
@@ -185,6 +193,9 @@ class ClawdTankApp(rumps.App, DaemonObserver):
 
         # Create transports based on preferences
         prefs = load_preferences()
+
+        # Apply alert-sound preference to the daemon
+        self._daemon.set_sounds_enabled(prefs.get("sounds_enabled", True))
 
         if prefs.get("ble_enabled", True):
             from clawd_tank_daemon.ble_client import ClawdBleClient
@@ -333,6 +344,13 @@ class ClawdTankApp(rumps.App, DaemonObserver):
             # Update daemon staleness timeout
             if self._daemon:
                 self._daemon.set_session_timeout(seconds)
+
+    def _on_toggle_sounds(self, sender):
+        """Toggle macOS alert sounds on/off."""
+        sender.state = not sender.state
+        save_preferences(updates={"sounds_enabled": sender.state})
+        if self._daemon:
+            self._daemon.set_sounds_enabled(sender.state)
 
     def _on_toggle_ble_enabled(self, sender):
         """Toggle BLE transport on/off."""
