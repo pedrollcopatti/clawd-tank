@@ -14,6 +14,7 @@ import rumps
 from clawd_tank_daemon.daemon import ClawdDaemon, DaemonObserver
 from clawd_tank_daemon.sim_client import SimClient, SIM_DEFAULT_PORT
 from . import hooks, launchd
+from .popover import SessionPopoverController, install_status_item_ui
 from .preferences import load_preferences, save_preferences
 from .slider import create_slider_menu_item
 from .status_icon import aggregate_state, icon_name, status_title
@@ -40,6 +41,7 @@ class ClawdTankApp(rumps.App, DaemonObserver):
         self._loop_ready = threading.Event()
         self._transport_status: dict[str, bool] = {}
         self._sessions: list[dict] = []
+        self._popover = None
         self._current_config: dict = {}
         self._sim_process = None
 
@@ -160,6 +162,30 @@ class ClawdTankApp(rumps.App, DaemonObserver):
         self._update_status_item()
         self._update_menu_state()
 
+        # The status item doesn't exist until rumps builds it in run(); this
+        # event fires right after, before the run loop starts.
+        self._popover = SessionPopoverController(
+            on_settings=self._show_settings_menu,
+            hooks_installed=hooks.are_hooks_installed,
+        )
+        self._show_settings = None
+        rumps.events.before_start.register(self._install_popover)
+
+    def _install_popover(self):
+        """Take over status item clicks: left opens the popover, right the menu.
+
+        rumps.events.emit() swallows exceptions with a bare traceback print, so
+        a failure here would otherwise leave a dead status item with no log.
+        """
+        try:
+            self._show_settings = install_status_item_ui(self, self._popover)
+        except Exception:
+            logger.exception("Could not install the popover; falling back to the menu")
+
+    def _show_settings_menu(self):
+        if self._show_settings is not None:
+            self._show_settings()
+
     @property
     def _connected(self) -> bool:
         return any(self._transport_status.values()) if self._transport_status else False
@@ -229,6 +255,10 @@ class ClawdTankApp(rumps.App, DaemonObserver):
         """Main thread. Store the snapshot and refresh what it drives."""
         self._sessions = snapshot
         self._update_status_item()
+        # Rebuilding views for a popover nobody is looking at is wasted work;
+        # show() reloads from the stored snapshot anyway.
+        if self._popover is not None and self._popover.is_shown:
+            self._popover.reload(snapshot)
 
     def _update_status_item(self) -> None:
         """Set the status bar icon and title from the current session state.

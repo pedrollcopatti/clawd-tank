@@ -46,7 +46,7 @@ ROW_PX = 96
 MENUBAR_ICONS = {
     "crab-sleeping": ("sprite_sleeping", 18, 1.0),   # crab under a "Z"
     "crab-idle": ("sprite_idle", 0, 1.0),
-    "crab-thinking": ("sprite_thinking", 16, 1.0),   # thought bubble up
+    "crab-thinking": ("sprite_thinking", 8, 1.0),    # thought bubble up
     "crab-working": ("sprite_typing", 0, 1.0),       # crab at the laptop
     "crab-waiting": ("sprite_alert", 8, 1.0),        # red "!" raised
     "crab-error": ("sprite_dizzy", 16, 1.0),         # stars out
@@ -60,7 +60,7 @@ MENUBAR_ICONS = {
 ROW_SPRITES = {
     "idle": ("sprite_idle", 0, 1.0),
     "sleeping": ("sprite_sleeping", 18, 1.0),
-    "thinking": ("sprite_thinking", 16, 1.0),
+    "thinking": ("sprite_thinking", 8, 1.0),
     "typing": ("sprite_typing", 0, 1.0),
     "building": ("sprite_building", 0, 1.0),
     "debugger": ("sprite_debugger", 0, 1.0),
