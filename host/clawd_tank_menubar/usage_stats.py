@@ -25,6 +25,19 @@ logger = logging.getLogger("clawd-tank.usage")
 
 TRANSCRIPT_ROOT = Path.home() / ".claude" / "projects"
 
+# Claude Code caches the account's rate-limit utilisation here after it asks the
+# API for it. It does NOT refresh on a timer — the field can sit untouched for
+# days while the rest of the file is rewritten constantly — so anything read
+# from it has to be checked against its own reset time before being believed.
+LIMITS_PATH = Path.home() / ".claude.json"
+
+# Which windows to surface, and what to call them. `limits[]` in the same blob
+# carries per-model scoped windows too; those answer a different question.
+_LIMIT_WINDOWS = (("five_hour", "SESSION"), ("seven_day", "WEEK"))
+
+# Past this, a reading is shown as a floor (">=") rather than a exact figure.
+STALE_AFTER_SECS = 1800.0
+
 # Cheap prefilter before json.loads. Transcripts are mostly user turns and
 # attachments, which are the bulk of the bytes and carry no accounting.
 _USAGE_MARKER = '"usage"'
@@ -52,6 +65,123 @@ class UsageStats:
     @property
     def is_empty(self) -> bool:
         return self.messages == 0
+
+
+@dataclass(frozen=True)
+class LimitWindow:
+    """One rate-limit window: how much is used and when it resets."""
+    key: str
+    label: str
+    percent: int
+    resets_at: float
+
+    def seconds_until_reset(self, now: Optional[float] = None) -> float:
+        return self.resets_at - (now if now is not None else _now())
+
+    def is_live(self, now: Optional[float] = None) -> bool:
+        """False once the window has rolled over.
+
+        A percentage from a window that already reset says nothing about the
+        current one, so it must not be shown as if it did.
+        """
+        return self.seconds_until_reset(now) > 0
+
+
+@dataclass(frozen=True)
+class UsageLimits:
+    windows: tuple[LimitWindow, ...] = ()
+    fetched_at: Optional[float] = None
+
+    def live_windows(self, now: Optional[float] = None) -> list[LimitWindow]:
+        return [w for w in self.windows if w.is_live(now)]
+
+    def is_usable(self, now: Optional[float] = None) -> bool:
+        return bool(self.live_windows(now))
+
+    def is_stale(self, now: Optional[float] = None) -> bool:
+        """True when the reading predates the window it describes by enough
+        that usage has probably moved. Inside a live window usage only climbs,
+        so a stale percentage is a floor rather than a wrong number."""
+        if self.fetched_at is None:
+            return False
+        return (now if now is not None else _now()) - self.fetched_at > STALE_AFTER_SECS
+
+
+def _now() -> float:
+    import time
+    return time.time()
+
+
+def read_usage_limits(path: Path = LIMITS_PATH) -> UsageLimits:
+    """Read the cached rate-limit utilisation. Never raises."""
+    try:
+        blob = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return UsageLimits()
+
+    cached = blob.get("cachedUsageUtilization") or {}
+    utilization = cached.get("utilization") or {}
+
+    fetched_ms = cached.get("fetchedAtMs")
+    fetched_at = fetched_ms / 1000 if isinstance(fetched_ms, (int, float)) else None
+
+    windows = []
+    for key, label in _LIMIT_WINDOWS:
+        window = utilization.get(key)
+        if not isinstance(window, dict):
+            continue
+        percent = window.get("utilization")
+        resets_raw = window.get("resets_at")
+        if not isinstance(percent, (int, float)) or not resets_raw:
+            continue
+        try:
+            resets_at = datetime.datetime.fromisoformat(
+                str(resets_raw).replace("Z", "+00:00")
+            ).timestamp()
+        except ValueError:
+            continue
+        windows.append(
+            LimitWindow(key=key, label=label, percent=int(percent), resets_at=resets_at)
+        )
+
+    return UsageLimits(windows=tuple(windows), fetched_at=fetched_at)
+
+
+def format_countdown(seconds: float) -> str:
+    """How long until a window resets: 12m, 2h 14m, 3d 4h."""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return "under a minute"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h {minutes}m"
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours}h"
+
+
+def format_age(seconds: float) -> str:
+    """How long ago the limits were fetched: 4m, 3h, 4d."""
+    seconds = max(0, int(seconds))
+    if seconds < 3600:
+        return f"{max(1, seconds // 60)}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
+def limits_caption(limits: UsageLimits, now: Optional[float] = None) -> str:
+    """The line under the bars, explaining how much to trust them."""
+    now = now if now is not None else _now()
+    if not limits.windows:
+        return "Run /usage in Claude Code to see your limits"
+    if not limits.is_usable(now):
+        return "Limits expired — run /usage in Claude Code to refresh"
+    if not limits.is_stale(now) or limits.fetched_at is None:
+        return ""
+    return f"Measured {format_age(now - limits.fetched_at)} ago"
 
 
 def start_of_today() -> float:
@@ -173,3 +303,19 @@ def stats_caption(stats: UsageStats) -> str:
         return "No activity yet today"
     projects = f"{stats.projects} project" + ("s" if stats.projects != 1 else "")
     return f"{projects} · {format_count(stats.total_input_tokens)} tokens in"
+
+
+def today_summary(stats: UsageStats, prefix: bool = False) -> str:
+    """The compact today line under the limit bars.
+
+    `prefix` adds the "Today ·" label. It's dropped when the line shares its row
+    with the staleness note, where the width doesn't stretch to it.
+    """
+    head = "Today · " if prefix else ""
+    if stats.is_empty:
+        return f"{head}nothing yet"
+    sessions = f"{stats.sessions} session" + ("s" if stats.sessions != 1 else "")
+    return (
+        f"{head}{sessions} · {format_count(stats.messages)} msgs"
+        f" · {format_count(stats.output_tokens)} out"
+    )

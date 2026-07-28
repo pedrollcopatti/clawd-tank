@@ -11,6 +11,7 @@ asyncio thread must marshal through AppHelper.callAfter first.
 
 import logging
 import subprocess
+import time
 
 import AppKit
 import objc
@@ -28,7 +29,12 @@ from .session_row import (
 )
 from .session_view_model import build_empty_state as empty_state_model
 from .session_view_model import build_row_models, footer_text
-from .usage_stats import UsageStats, collect_usage_stats
+from .usage_stats import (
+    UsageLimits,
+    UsageStats,
+    collect_usage_stats,
+    read_usage_limits,
+)
 
 logger = logging.getLogger("clawd-tank.popover")
 
@@ -87,6 +93,7 @@ class SessionPopoverController:
         self._models = []
         self._snapshot = []
         self._stats = UsageStats()
+        self._limits = UsageLimits()
         self._tick_timer = None
         self._click_monitor = None
 
@@ -134,13 +141,18 @@ class SessionPopoverController:
         self._popover.setContentSize_(AppKit.NSMakeSize(ROW_W, total_h))
 
     def refresh_usage(self) -> None:
-        """Re-read today's usage. Called when the popover opens, not on every
+        """Re-read usage and limits. Called when the popover opens, not on every
         snapshot push — the numbers move slowly and the scan touches disk."""
         try:
             self._stats = collect_usage_stats()
         except Exception:
             logger.exception("Could not read usage stats")
             self._stats = UsageStats()
+        try:
+            self._limits = read_usage_limits()
+        except Exception:
+            logger.exception("Could not read usage limits")
+            self._limits = UsageLimits()
 
     # --- Content ---
 
@@ -184,7 +196,7 @@ class SessionPopoverController:
         separator.setFrameOrigin_(AppKit.NSMakePoint(0, separator_y))
         self._content.addSubview_(separator)
 
-        block = build_stats_block(self._stats)
+        block = build_stats_block(self._stats, self._limits, time.time())
         block.setFrameOrigin_(AppKit.NSMakePoint(0, top))
         self._content.addSubview_(block)
 

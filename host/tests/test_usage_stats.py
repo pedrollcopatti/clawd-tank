@@ -194,3 +194,111 @@ def test_caption_pluralises_projects(projects, expected):
         cache_write_tokens=25,
     )
     assert stats_caption(stats) == expected
+
+
+# --- Rate-limit windows ---
+
+
+def _limits_file(tmp_path, five_hour_pct, five_hour_reset, fetched_at, seven=None):
+    import datetime as dt
+    path = tmp_path / ".claude.json"
+    util = {
+        "five_hour": {
+            "utilization": five_hour_pct,
+            "resets_at": dt.datetime.fromtimestamp(
+                five_hour_reset, dt.timezone.utc
+            ).isoformat(),
+        },
+    }
+    if seven is not None:
+        pct, reset = seven
+        util["seven_day"] = {
+            "utilization": pct,
+            "resets_at": dt.datetime.fromtimestamp(reset, dt.timezone.utc).isoformat(),
+        }
+    path.write_text(json.dumps({
+        "cachedUsageUtilization": {
+            "fetchedAtMs": fetched_at * 1000,
+            "utilization": util,
+        }
+    }))
+    return path
+
+
+def test_no_limits_file(tmp_path):
+    from clawd_tank_menubar.usage_stats import read_usage_limits
+    limits = read_usage_limits(tmp_path / "nope.json")
+    assert limits.windows == ()
+    assert not limits.is_usable(CUTOFF)
+
+
+def test_malformed_limits_file(tmp_path):
+    from clawd_tank_menubar.usage_stats import read_usage_limits
+    path = tmp_path / ".claude.json"
+    path.write_text("{{{ not json")
+    assert read_usage_limits(path).windows == ()
+
+
+def test_reads_both_windows(tmp_path):
+    from clawd_tank_menubar.usage_stats import read_usage_limits
+    path = _limits_file(tmp_path, 63, CUTOFF + 3600, CUTOFF - 60,
+                        seven=(32, CUTOFF + 86400))
+    limits = read_usage_limits(path)
+
+    assert [w.label for w in limits.windows] == ["SESSION", "WEEK"]
+    assert [w.percent for w in limits.windows] == [63, 32]
+    assert limits.is_usable(CUTOFF)
+
+
+def test_expired_window_is_not_live(tmp_path):
+    """A percentage from a window that already reset says nothing about the
+    current one, so it must never be shown as if it did."""
+    from clawd_tank_menubar.usage_stats import read_usage_limits
+    path = _limits_file(tmp_path, 5, CUTOFF - 3600, CUTOFF - 7200)
+    limits = read_usage_limits(path)
+
+    assert limits.windows[0].percent == 5
+    assert not limits.windows[0].is_live(CUTOFF)
+    assert limits.live_windows(CUTOFF) == []
+    assert not limits.is_usable(CUTOFF)
+
+
+def test_staleness_is_about_the_fetch_not_the_window(tmp_path):
+    from clawd_tank_menubar.usage_stats import read_usage_limits
+    fresh = read_usage_limits(_limits_file(tmp_path, 63, CUTOFF + 3600, CUTOFF - 60))
+    assert not fresh.is_stale(CUTOFF)
+
+    old = read_usage_limits(
+        _limits_file(tmp_path, 63, CUTOFF + 3600, CUTOFF - 7200)
+    )
+    assert old.is_stale(CUTOFF)
+    assert old.is_usable(CUTOFF)  # still worth showing, as a floor
+
+
+@pytest.mark.parametrize("seconds,expected", [
+    (30, "under a minute"),
+    (12 * 60, "12m"),
+    (2 * 3600 + 14 * 60, "2h 14m"),
+    (3 * 86400 + 4 * 3600, "3d 4h"),
+    (-100, "under a minute"),
+])
+def test_format_countdown(seconds, expected):
+    from clawd_tank_menubar.usage_stats import format_countdown
+    assert format_countdown(seconds) == expected
+
+
+def test_caption_when_there_are_no_limits_at_all():
+    from clawd_tank_menubar.usage_stats import UsageLimits, limits_caption
+    assert "Run /usage" in limits_caption(UsageLimits(), CUTOFF)
+
+
+def test_caption_when_the_window_expired(tmp_path):
+    from clawd_tank_menubar.usage_stats import limits_caption, read_usage_limits
+    limits = read_usage_limits(_limits_file(tmp_path, 5, CUTOFF - 10, CUTOFF - 7200))
+    assert "expired" in limits_caption(limits, CUTOFF)
+
+
+def test_no_caption_when_the_reading_is_current(tmp_path):
+    from clawd_tank_menubar.usage_stats import limits_caption, read_usage_limits
+    limits = read_usage_limits(_limits_file(tmp_path, 63, CUTOFF + 3600, CUTOFF - 60))
+    assert limits_caption(limits, CUTOFF) == ""
