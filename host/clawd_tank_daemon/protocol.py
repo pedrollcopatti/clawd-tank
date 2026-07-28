@@ -1,6 +1,5 @@
-"""Message format conversion between Claude Code hooks, daemon, and BLE."""
+"""Message format conversion between Claude Code hooks and the daemon."""
 
-import json
 from pathlib import Path
 from typing import Optional
 
@@ -160,70 +159,3 @@ def hook_payload_to_daemon_message(hook: dict) -> Optional[dict]:
         }
 
     return None
-
-
-def daemon_message_to_ble_payload(msg: dict) -> Optional[str]:
-    """Convert a daemon message to a JSON string for BLE GATT write.
-
-    Returns None for session-internal events (session_start, tool_use, tool_done,
-    permission, tool_failed, compact, subagent_start, subagent_stop) that have no
-    BLE representation. Raises ValueError for unknown events.
-    """
-    event = msg["event"]
-
-    if event in (
-        "session_start", "tool_use", "tool_done", "permission", "tool_failed",
-        "compact", "subagent_start", "subagent_stop",
-    ):
-        return None
-
-    if event == "add":
-        payload = {
-            "action": "add",
-            "id": msg.get("session_id", ""),
-            "project": msg.get("project", ""),
-            "message": msg.get("message", ""),
-        }
-        if msg.get("hook") == "StopFailure":
-            payload["alert"] = "error"
-        return json.dumps(payload)
-
-    if event == "dismiss":
-        return json.dumps({
-            "action": "dismiss",
-            "id": msg.get("session_id", ""),
-        })
-
-    if event == "clear":
-        return json.dumps({"action": "clear"})
-
-    raise ValueError(f"Unknown event: {event}")
-
-
-def display_state_to_ble_payload(state: dict) -> str:
-    """Convert display state dict to v2 JSON payload."""
-    if "status" in state:
-        return json.dumps({"action": "set_status", "status": state["status"]})
-    payload = {"action": "set_sessions", **state}
-    return json.dumps(payload)
-
-
-def display_state_to_v1_payload(state: dict) -> str:
-    """Convert display state dict to legacy v1 set_status payload."""
-    if "status" in state:
-        return json.dumps({"action": "set_status", "status": state["status"]})
-    anims = state.get("anims", [])
-    WORKING_ANIMS = {"typing", "building", "debugger", "wizard", "conducting", "beacon"}
-    working = sum(1 for a in anims if a in WORKING_ANIMS)
-    if "alert" in anims:
-        # "needs your input" is the most actionable signal — outrank busy work.
-        status = "confused"
-    elif working > 0:
-        status = f"working_{min(working, 3)}"
-    elif "thinking" in anims:
-        status = "thinking"
-    elif any(a in ("confused", "dizzy") for a in anims):
-        status = "confused"
-    else:
-        status = "idle"
-    return json.dumps({"action": "set_status", "status": status})

@@ -58,12 +58,11 @@ OPTIONS = {
         "CFBundleVersion": "1.0.0",
         "CFBundleShortVersionString": "1.0.0",
         "LSUIElement": True,  # menu-bar-only app (no Dock icon)
-        "NSBluetoothAlwaysUsageDescription": (
-            "Clawd Tank uses Bluetooth to communicate with the ESP32 display."
-        ),
     },
     "packages": ["clawd_tank_daemon", "clawd_tank_menubar"],
-    "includes": ["rumps", "bleak", "objc"],
+    # AppKit is listed explicitly: pyobjc framework modules are resolved
+    # lazily, so modulegraph can miss them.
+    "includes": ["rumps", "objc", "AppKit"],
     "resources": ["clawd_tank_menubar/icons"],
 }
 

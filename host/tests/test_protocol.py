@@ -1,10 +1,4 @@
-import json
-from clawd_tank_daemon.protocol import (
-    hook_payload_to_daemon_message,
-    daemon_message_to_ble_payload,
-    display_state_to_ble_payload,
-    display_state_to_v1_payload,
-)
+from clawd_tank_daemon.protocol import hook_payload_to_daemon_message
 
 
 def test_idle_prompt_to_add():
@@ -56,24 +50,6 @@ def test_irrelevant_notification_ignored():
     }
     msg = hook_payload_to_daemon_message(hook)
     assert msg is None
-
-
-def test_daemon_add_to_ble():
-    msg = {"event": "add", "session_id": "s1", "project": "proj", "message": "hi"}
-    ble = daemon_message_to_ble_payload(msg)
-    parsed = json.loads(ble)
-    assert parsed["action"] == "add"
-    assert parsed["id"] == "s1"
-    assert parsed["project"] == "proj"
-    assert parsed["message"] == "hi"
-
-
-def test_daemon_dismiss_to_ble():
-    msg = {"event": "dismiss", "session_id": "s1"}
-    ble = daemon_message_to_ble_payload(msg)
-    parsed = json.loads(ble)
-    assert parsed["action"] == "dismiss"
-    assert parsed["id"] == "s1"
 
 
 # --- Edge cases ---
@@ -167,20 +143,6 @@ def test_missing_message_field_uses_default():
     msg = hook_payload_to_daemon_message(hook)
     assert msg is not None
     assert msg["message"] == "Waiting for input"
-
-
-def test_ble_payload_clear_event():
-    """Clear event must produce {"action": "clear"} with no extra fields."""
-    ble = daemon_message_to_ble_payload({"event": "clear"})
-    parsed = json.loads(ble)
-    assert parsed == {"action": "clear"}
-
-
-def test_ble_payload_unknown_event_raises():
-    """Unknown event must raise ValueError, not silently produce bad output."""
-    import pytest
-    with pytest.raises(ValueError):
-        daemon_message_to_ble_payload({"event": "bogus"})
 
 
 # --- New hook event types ---
@@ -289,13 +251,6 @@ def test_session_end_dismiss_includes_hook_discriminator():
     assert msg["hook"] == "SessionEnd"
 
 
-def test_session_events_produce_no_ble_payload():
-    """session_start, tool_use, compact return None from daemon_message_to_ble_payload."""
-    assert daemon_message_to_ble_payload({"event": "session_start", "session_id": "s"}) is None
-    assert daemon_message_to_ble_payload({"event": "tool_use", "session_id": "s"}) is None
-    assert daemon_message_to_ble_payload({"event": "compact", "session_id": "s"}) is None
-
-
 def test_subagent_start_produces_subagent_start_event():
     hook = {
         "hook_event_name": "SubagentStart",
@@ -322,97 +277,6 @@ def test_subagent_stop_produces_subagent_stop_event():
     assert msg["event"] == "subagent_stop"
     assert msg["session_id"] == "sess-1"
     assert msg["agent_id"] == "agent-abc123"
-
-
-def test_subagent_events_produce_no_ble_payload():
-    assert daemon_message_to_ble_payload({"event": "subagent_start", "session_id": "s", "agent_id": "a"}) is None
-    assert daemon_message_to_ble_payload({"event": "subagent_stop", "session_id": "s", "agent_id": "a"}) is None
-
-
-# --- Display state payload generation (v2 protocol) ---
-
-
-def test_display_state_to_payload_v2_sessions():
-    state = {"anims": ["typing", "thinking"], "ids": [1, 2], "subagents": 3}
-    payload = display_state_to_ble_payload(state)
-    parsed = json.loads(payload)
-    assert parsed["action"] == "set_sessions"
-    assert parsed["anims"] == ["typing", "thinking"]
-    assert parsed["ids"] == [1, 2]
-    assert parsed["subagents"] == 3
-    assert "overflow" not in parsed
-
-
-def test_display_state_to_payload_v2_with_overflow():
-    state = {"anims": ["typing"] * 4, "ids": [1, 2, 3, 4], "subagents": 0, "overflow": 2}
-    payload = display_state_to_ble_payload(state)
-    parsed = json.loads(payload)
-    assert parsed["overflow"] == 2
-
-
-def test_display_state_to_payload_sleeping():
-    state = {"status": "sleeping"}
-    payload = display_state_to_ble_payload(state)
-    parsed = json.loads(payload)
-    assert parsed == {"action": "set_status", "status": "sleeping"}
-
-
-def test_display_state_to_payload_v1_fallback():
-    """For v1 transports, convert dict state to legacy set_status string."""
-    state = {"anims": ["typing", "thinking"], "ids": [1, 2], "subagents": 3}
-    payload = display_state_to_v1_payload(state)
-    parsed = json.loads(payload)
-    assert parsed["action"] == "set_status"
-    assert parsed["status"] == "working_1"  # 1 typing session counts as working
-
-
-def test_display_state_to_v1_two_working():
-    state = {"anims": ["typing", "typing"], "ids": [1, 2], "subagents": 0}
-    payload = display_state_to_v1_payload(state)
-    parsed = json.loads(payload)
-    assert parsed["status"] == "working_2"
-
-
-def test_display_state_to_v1_building_counts_as_working():
-    state = {"anims": ["building", "typing"], "ids": [1, 2], "subagents": 1}
-    payload = display_state_to_v1_payload(state)
-    parsed = json.loads(payload)
-    assert parsed["status"] == "working_2"
-
-
-def test_display_state_to_v1_capped_at_3():
-    state = {"anims": ["typing", "typing", "building", "typing"], "ids": [1, 2, 3, 4], "subagents": 1}
-    payload = display_state_to_v1_payload(state)
-    parsed = json.loads(payload)
-    assert parsed["status"] == "working_3"
-
-
-def test_display_state_to_v1_thinking():
-    state = {"anims": ["thinking"], "ids": [1], "subagents": 0}
-    payload = display_state_to_v1_payload(state)
-    parsed = json.loads(payload)
-    assert parsed["status"] == "thinking"
-
-
-def test_display_state_to_v1_confused():
-    state = {"anims": ["confused"], "ids": [1], "subagents": 0}
-    payload = display_state_to_v1_payload(state)
-    parsed = json.loads(payload)
-    assert parsed["status"] == "confused"
-
-
-def test_display_state_to_v1_idle():
-    state = {"anims": ["idle"], "ids": [1], "subagents": 0}
-    payload = display_state_to_v1_payload(state)
-    parsed = json.loads(payload)
-    assert parsed["status"] == "idle"
-
-
-def test_display_state_to_v1_sleeping():
-    state = {"status": "sleeping"}
-    payload = display_state_to_v1_payload(state)
-    parsed = json.loads(payload)
-    assert parsed == {"action": "set_status", "status": "sleeping"}
 
 
 # --- StopFailure hook ---
@@ -444,33 +308,6 @@ def test_stop_failure_fallback_message():
     assert msg["message"] == "API error"
 
 
-def test_stop_failure_ble_payload_includes_alert():
-    msg = {
-        "event": "add",
-        "hook": "StopFailure",
-        "session_id": "s1",
-        "project": "proj",
-        "message": "Rate limited",
-    }
-    ble = daemon_message_to_ble_payload(msg)
-    parsed = json.loads(ble)
-    assert parsed["action"] == "add"
-    assert parsed["alert"] == "error"
-
-
-def test_normal_add_ble_payload_no_alert():
-    msg = {
-        "event": "add",
-        "hook": "Stop",
-        "session_id": "s1",
-        "project": "proj",
-        "message": "Waiting",
-    }
-    ble = daemon_message_to_ble_payload(msg)
-    parsed = json.loads(ble)
-    assert "alert" not in parsed
-
-
 def test_stop_failure_stop_reason_fallback():
     hook = {
         "hook_event_name": "StopFailure",
@@ -480,34 +317,6 @@ def test_stop_failure_stop_reason_fallback():
     }
     msg = hook_payload_to_daemon_message(hook)
     assert msg["message"] == "max_turns"
-
-
-def test_display_state_to_v1_debugger_counts_as_working():
-    state = {"anims": ["debugger"], "ids": [1], "subagents": 0}
-    payload = display_state_to_v1_payload(state)
-    parsed = json.loads(payload)
-    assert parsed["status"] == "working_1"
-
-
-def test_display_state_to_v1_wizard_counts_as_working():
-    state = {"anims": ["wizard", "conducting"], "ids": [1, 2], "subagents": 0}
-    payload = display_state_to_v1_payload(state)
-    parsed = json.loads(payload)
-    assert parsed["status"] == "working_2"
-
-
-def test_display_state_to_v1_beacon_counts_as_working():
-    state = {"anims": ["beacon"], "ids": [1], "subagents": 0}
-    payload = display_state_to_v1_payload(state)
-    parsed = json.loads(payload)
-    assert parsed["status"] == "working_1"
-
-
-def test_display_state_to_v1_dizzy_maps_to_confused():
-    state = {"anims": ["dizzy"], "ids": [1], "subagents": 0}
-    payload = display_state_to_v1_payload(state)
-    parsed = json.loads(payload)
-    assert parsed["status"] == "confused"
 
 
 # --- PID, source, reason capture (ghost-crab fix) ---
@@ -632,36 +441,6 @@ def test_post_tool_use_includes_pid():
     assert msg["pid"] == 4242
 
 
-def test_tool_done_produces_no_ble_payload():
-    """tool_done is session-internal — has no BLE representation."""
-    assert daemon_message_to_ble_payload(
-        {"event": "tool_done", "session_id": "s", "tool_name": "AskUserQuestion"}
-    ) is None
-
-
-def test_display_state_to_v1_alert_maps_to_confused():
-    """The 'alert' (waiting-for-input) anim maps to v1 'confused' needs-attention status."""
-    state = {"anims": ["alert"], "ids": [1], "subagents": 0}
-    payload = display_state_to_v1_payload(state)
-    parsed = json.loads(payload)
-    assert parsed["status"] == "confused"
-
-
-def test_display_state_to_v1_alert_outranks_working():
-    """A 'needs your input' session must surface on v1 even when another session works."""
-    state = {"anims": ["alert", "typing"], "ids": [1, 2], "subagents": 0}
-    payload = display_state_to_v1_payload(state)
-    parsed = json.loads(payload)
-    assert parsed["status"] == "confused", "alert must outrank working on v1"
-
-
-def test_display_state_to_v1_alert_outranks_thinking():
-    state = {"anims": ["thinking", "alert"], "ids": [1, 2], "subagents": 0}
-    payload = display_state_to_v1_payload(state)
-    parsed = json.loads(payload)
-    assert parsed["status"] == "confused"
-
-
 # --- PermissionRequest (waiting/alert) and PostToolUseFailure (confused) ---
 
 
@@ -703,10 +482,3 @@ def test_post_tool_use_failure_produces_tool_failed_event():
     assert msg["tool_name"] == "Read"
 
 
-def test_permission_and_tool_failed_produce_no_ble_payload():
-    assert daemon_message_to_ble_payload(
-        {"event": "permission", "session_id": "s", "tool_name": "Bash"}
-    ) is None
-    assert daemon_message_to_ble_payload(
-        {"event": "tool_failed", "session_id": "s", "tool_name": "Read"}
-    ) is None

@@ -6,15 +6,22 @@ import time
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from clawd_tank_daemon.daemon import ClawdDaemon
+from clawd_tank_daemon.daemon import ClawdDaemon, build_session_snapshot
 
 
-def make_daemon():
-    """Create a daemon in sim-only mode with no actual transport."""
-    d = ClawdDaemon(sim_only=True)
-    d._transports.clear()
-    d._transport_queues.clear()
-    return d
+def make_daemon(**kwargs):
+    """Daemon with no transports — the menu bar is the only consumer."""
+    return ClawdDaemon(**kwargs)
+
+
+def snapshot(d):
+    """The UI-shaped view the daemon pushes to its observer."""
+    return build_session_snapshot(d._session_states, d._session_order)
+
+
+def states(d):
+    """Just the session states, in arrival order."""
+    return [s["state"] for s in snapshot(d)]
 
 
 def _add_session(d, sid, state_dict, display_id=None):
@@ -27,75 +34,6 @@ def _add_session(d, sid, state_dict, display_id=None):
             d._next_display_id += 1
         else:
             d._next_display_id = max(d._next_display_id, did + 1)
-
-
-def test_no_sessions_returns_sleeping():
-    d = make_daemon()
-    assert d._compute_display_state() == {"status": "sleeping"}
-
-def test_single_registered_session_returns_idle():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "registered", "last_event": time.time()})
-    assert d._compute_display_state() == {"anims": ["idle"], "ids": [1], "subagents": 0}
-
-def test_single_idle_session_returns_idle():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "idle", "last_event": time.time()})
-    assert d._compute_display_state() == {"anims": ["idle"], "ids": [1], "subagents": 0}
-
-def test_single_thinking_session_returns_thinking():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "thinking", "last_event": time.time()})
-    assert d._compute_display_state() == {"anims": ["thinking"], "ids": [1], "subagents": 0}
-
-def test_single_working_session_returns_typing():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "working", "last_event": time.time()})
-    assert d._compute_display_state() == {"anims": ["typing"], "ids": [1], "subagents": 0}
-
-def test_two_working_sessions_returns_two_typing():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "working", "last_event": time.time()})
-    _add_session(d, "s2", {"state": "working", "last_event": time.time()})
-    state = d._compute_display_state()
-    assert state["anims"] == ["typing", "typing"]
-    assert len(state["ids"]) == 2
-
-def test_three_plus_working_sessions_capped_at_four():
-    d = make_daemon()
-    for i in range(5):
-        _add_session(d, f"s{i}", {"state": "working", "last_event": time.time()})
-    state = d._compute_display_state()
-    assert len(state["anims"]) == 4  # max visible
-    assert state["overflow"] == 1
-
-def test_working_and_thinking_mixed():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "working", "last_event": time.time()})
-    _add_session(d, "s2", {"state": "thinking", "last_event": time.time()})
-    state = d._compute_display_state()
-    assert state["anims"] == ["typing", "thinking"]
-
-def test_thinking_and_confused_mixed():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "thinking", "last_event": time.time()})
-    _add_session(d, "s2", {"state": "confused", "last_event": time.time()})
-    state = d._compute_display_state()
-    assert state["anims"] == ["thinking", "confused"]
-
-def test_confused_and_idle_mixed():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "confused", "last_event": time.time()})
-    _add_session(d, "s2", {"state": "idle", "last_event": time.time()})
-    state = d._compute_display_state()
-    assert state["anims"] == ["confused", "idle"]
-
-def test_registered_treated_as_idle():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "registered", "last_event": time.time()})
-    _add_session(d, "s2", {"state": "confused", "last_event": time.time()})
-    state = d._compute_display_state()
-    assert state["anims"] == ["idle", "confused"]
 
 
 # --- Task 4: _handle_message wiring ---
@@ -155,25 +93,6 @@ async def test_implicit_session_creation():
     assert "s1" in d._session_states
     assert d._session_states["s1"]["state"] == "working"
 
-@pytest.mark.asyncio
-async def test_last_display_state_tracks_changes():
-    d = make_daemon()
-    assert d._last_display_state == {"status": "sleeping"}
-    await d._handle_message({"event": "session_start", "session_id": "s1"})
-    assert d._last_display_state == {"anims": ["idle"], "ids": [1], "subagents": 0}
-    await d._handle_message({"event": "dismiss", "hook": "UserPromptSubmit", "session_id": "s1"})
-    assert d._last_display_state == {"anims": ["thinking"], "ids": [1], "subagents": 0}
-    await d._handle_message({"event": "tool_use", "session_id": "s1"})
-    assert d._last_display_state == {"anims": ["typing"], "ids": [1], "subagents": 0}
-    await d._handle_message({
-        "event": "add", "hook": "Stop", "session_id": "s1",
-        "project": "proj", "message": "Waiting",
-    })
-    assert d._last_display_state == {"anims": ["idle"], "ids": [1], "subagents": 0}
-    await d._handle_message({"event": "dismiss", "hook": "SessionEnd", "session_id": "s1"})
-    assert d._last_display_state == {"status": "sleeping"}
-
-
 # --- Task 5: staleness eviction and compact handling ---
 
 def test_staleness_evicts_old_sessions():
@@ -212,28 +131,6 @@ def test_staleness_keeps_fresh_sessions():
     d._session_staleness_timeout = 600
     d._evict_stale_sessions()
     assert "s1" in d._session_states
-
-@pytest.mark.asyncio
-async def test_compact_triggers_sweeping():
-    """V2 transport receives set_sessions with 'sweeping' for the compacting session."""
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "working", "last_event": time.time()})
-    transport = AsyncMock()
-    transport.is_connected = True
-    d._transports["test"] = transport
-    d._transport_queues["test"] = asyncio.Queue()
-    d._transport_versions["test"] = 2  # v2 transport to get set_sessions
-    d._last_display_state = {"anims": ["typing"], "ids": [1], "subagents": 0}
-
-    await d._handle_message({"event": "compact", "session_id": "s1"})
-
-    calls = transport.write_notification.call_args_list
-    payloads = [json.loads(c[0][0]) for c in calls]
-    # V2: single set_sessions payload with the compacting session showing "sweeping"
-    session_payloads = [p for p in payloads if p.get("action") == "set_sessions"]
-    assert len(session_payloads) == 1
-    assert "sweeping" in session_payloads[0]["anims"]
-
 
 # --- Subagent tracking ---
 
@@ -334,43 +231,6 @@ def test_staleness_keeps_sessions_with_active_subagents():
     assert "s1" in d._session_states  # NOT evicted — still fresh
 
 
-def test_idle_session_with_subagents_counts_as_conducting():
-    d = make_daemon()
-    _add_session(d, "s1", {
-        "state": "idle",
-        "last_event": time.time(),
-        "subagents": {"a1"},
-    })
-    state = d._compute_display_state()
-    assert state["anims"] == ["conducting"]
-    assert state["subagents"] == 1
-
-
-def test_multiple_sessions_with_subagents():
-    d = make_daemon()
-    _add_session(d, "s1", {
-        "state": "idle", "last_event": time.time(), "subagents": {"a1"},
-    })
-    _add_session(d, "s2", {
-        "state": "working", "last_event": time.time(),
-    })
-    state = d._compute_display_state()
-    assert state["anims"] == ["conducting", "typing"]
-    assert state["subagents"] == 1
-
-
-def test_session_with_empty_subagents_not_counted_as_building():
-    d = make_daemon()
-    _add_session(d, "s1", {
-        "state": "idle",
-        "last_event": time.time(),
-        "subagents": set(),
-    })
-    state = d._compute_display_state()
-    assert state["anims"] == ["idle"]
-    assert state["subagents"] == 0
-
-
 # --- Task 6: edge case tests and integration test ---
 
 @pytest.mark.asyncio
@@ -394,16 +254,6 @@ async def test_duplicate_subagent_start_is_idempotent():
     await d._handle_message({"event": "subagent_start", "session_id": "s1", "agent_id": "a1"})
     assert d._session_states["s1"]["subagents"] == {"a1"}
 
-def test_working_session_with_subagents_counts_once():
-    """A session that is both state=working AND has subagents shows conducting."""
-    d = make_daemon()
-    _add_session(d, "s1", {
-        "state": "working", "last_event": time.time(), "subagents": {"a1"},
-    })
-    state = d._compute_display_state()
-    assert state["anims"] == ["conducting"]
-    assert state["subagents"] == 1
-
 @pytest.mark.asyncio
 async def test_subagent_lifecycle():
     """Full lifecycle: subagent keeps session working while active,
@@ -413,55 +263,36 @@ async def test_subagent_lifecycle():
 
     # Session starts and begins working
     await d._handle_message({"event": "session_start", "session_id": "s1"})
-    assert d._compute_display_state() == {"anims": ["idle"], "ids": [1], "subagents": 0}
+    assert states(d) == ["registered"]
 
     await d._handle_message({"event": "tool_use", "session_id": "s1"})
-    assert d._compute_display_state() == {"anims": ["typing"], "ids": [1], "subagents": 0}
+    assert states(d) == ["working"]
 
-    # Subagent spawned — session becomes conducting
+    # Subagent spawned — the session reports it
     await d._handle_message({"event": "subagent_start", "session_id": "s1", "agent_id": "a1"})
-    state = d._compute_display_state()
-    assert state["anims"] == ["conducting"]
-    assert state["subagents"] == 1
+    assert snapshot(d)[0]["subagents"] == 1
     assert "a1" in d._session_states["s1"]["subagents"]
 
-    # Stop fires — session state goes idle, but subagent keeps it conducting
+    # Stop fires — session state goes idle, but the subagent is still running
     await d._handle_message({
         "event": "add", "hook": "Stop", "session_id": "s1",
         "project": "proj", "message": "Waiting",
     })
     assert d._session_states["s1"]["state"] == "idle"
     assert "a1" in d._session_states["s1"]["subagents"]
-    state = d._compute_display_state()
-    assert state["anims"] == ["conducting"]
+    assert snapshot(d)[0]["subagents"] == 1
 
     # Subagent finishes via SubagentStop
     await d._handle_message({"event": "subagent_stop", "session_id": "s1", "agent_id": "a1"})
     assert not d._session_states["s1"].get("subagents")
-    assert d._compute_display_state() == {"anims": ["idle"], "ids": [1], "subagents": 0}
+    assert snapshot(d)[0]["subagents"] == 0
 
     # Staleness eviction works normally
     d._session_states["s1"]["last_event"] = time.time() - 9999
     d._session_states["s1"]["last_event_monotonic"] = time.monotonic() - 9999
     d._evict_stale_sessions()
     assert "s1" not in d._session_states
-    assert d._compute_display_state() == {"status": "sleeping"}
-
-
-@pytest.mark.asyncio
-async def test_stale_subagents_evicted_with_session():
-    """Missed SubagentStop hooks don't prevent eviction — if last_event_monotonic is
-    stale, subagent tool calls stopped refreshing it, so they're dead."""
-    d = make_daemon()
-    d._session_staleness_timeout = 1
-    d._session_states["s1"] = {
-        "state": "idle", "last_event": time.time() - 9999,
-        "last_event_monotonic": time.monotonic() - 9999,
-        "subagents": {"orphan1", "orphan2"},
-    }
-    d._evict_stale_sessions()
-    assert "s1" not in d._session_states
-    assert d._compute_display_state() == {"status": "sleeping"}
+    assert snapshot(d) == []
 
 
 # --- Session state persistence ---
@@ -469,9 +300,7 @@ async def test_stale_subagents_evicted_with_session():
 
 def make_daemon_with_path(sessions_path):
     """Create a test daemon that uses a custom sessions file path."""
-    d = ClawdDaemon(sim_only=True, sessions_path=sessions_path)
-    d._transports.clear()
-    d._transport_queues.clear()
+    d = make_daemon(sessions_path=sessions_path)
     return d
 
 
@@ -523,64 +352,6 @@ def test_daemon_persists_on_eviction(tmp_path):
     d._evict_stale_sessions()
     data = json.loads(path.read_text())
     assert "s1" not in data["sessions"]
-
-
-def test_daemon_loads_on_init(tmp_path):
-    path = tmp_path / "sessions.json"
-    path.write_text(json.dumps({
-        "s1": {"state": "working", "last_event": time.time()},
-    }))
-    d = ClawdDaemon(sim_only=True, sessions_path=path)
-    d._transports.clear()
-    d._transport_queues.clear()
-    assert "s1" in d._session_states
-    assert d._session_states["s1"]["state"] == "working"
-
-
-def test_daemon_loads_subagents_as_sets(tmp_path):
-    path = tmp_path / "sessions.json"
-    path.write_text(json.dumps({
-        "s1": {
-            "state": "idle",
-            "last_event": time.time(),
-            "subagents": ["a1", "a2"],
-        },
-    }))
-    d = ClawdDaemon(sim_only=True, sessions_path=path)
-    d._transports.clear()
-    d._transport_queues.clear()
-    assert d._session_states["s1"]["subagents"] == {"a1", "a2"}
-    assert isinstance(d._session_states["s1"]["subagents"], set)
-
-
-def test_daemon_startup_display_state_from_loaded_sessions(tmp_path):
-    path = tmp_path / "sessions.json"
-    # Use envelope format with session_order so _compute_display_state works
-    path.write_text(json.dumps({
-        "sessions": {
-            "s1": {"state": "working", "last_event": time.time()},
-        },
-        "session_order": [["s1", 1]],
-        "next_display_id": 2,
-    }))
-    d = ClawdDaemon(sim_only=True, sessions_path=path)
-    d._transports.clear()
-    d._transport_queues.clear()
-    assert d._compute_display_state() == {"anims": ["typing"], "ids": [1], "subagents": 0}
-
-
-def test_daemon_evicts_stale_sessions_on_startup(tmp_path):
-    """Stale sessions from disk are evicted immediately, not after 30s."""
-    path = tmp_path / "sessions.json"
-    path.write_text(json.dumps({
-        "stale": {"state": "working", "last_event": time.time() - 9999},
-        "fresh": {"state": "idle", "last_event": time.time()},
-    }))
-    d = ClawdDaemon(sim_only=True, sessions_path=path)
-    d._transports.clear()
-    d._transport_queues.clear()
-    assert "stale" not in d._session_states
-    assert "fresh" in d._session_states
 
 
 @pytest.mark.asyncio
@@ -640,57 +411,39 @@ async def test_session_order_created_on_tool_use_if_missing():
 
 
 @pytest.mark.asyncio
-async def test_display_state_single_session_typing():
+async def test_snapshot_single_working_session():
     d = make_daemon()
     await d._handle_message({"event": "session_start", "session_id": "aaa"})
-    await d._handle_message({"event": "tool_use", "session_id": "aaa"})
-    state = d._compute_display_state()
-    assert state == {"anims": ["typing"], "ids": [1], "subagents": 0}
+    await d._handle_message({"event": "tool_use", "session_id": "aaa", "tool_name": "Edit"})
+    assert snapshot(d) == [{
+        "session_id": "aaa", "display_id": 1, "project": "", "state": "working",
+        "tool_name": "Edit", "subagents": 0,
+        "last_event": d._session_states["aaa"]["last_event"],
+    }]
 
 
 @pytest.mark.asyncio
-async def test_display_state_working_with_subagents_becomes_conducting():
+async def test_snapshot_reports_subagent_count():
     d = make_daemon()
     await d._handle_message({"event": "session_start", "session_id": "aaa"})
     await d._handle_message({"event": "tool_use", "session_id": "aaa"})
     await d._handle_message({"event": "subagent_start", "session_id": "aaa", "agent_id": "sub1"})
-    state = d._compute_display_state()
-    assert state["anims"] == ["conducting"]
-    assert state["subagents"] == 1
+    assert snapshot(d)[0]["state"] == "working"
+    assert snapshot(d)[0]["subagents"] == 1
 
 
 @pytest.mark.asyncio
-async def test_display_state_preserves_arrival_order():
+async def test_snapshot_preserves_arrival_order():
     d = make_daemon()
     await d._handle_message({"event": "session_start", "session_id": "aaa"})
     await d._handle_message({"event": "tool_use", "session_id": "aaa"})
     await d._handle_message({"event": "session_start", "session_id": "bbb"})
-    # bbb is registered → idle
-    state = d._compute_display_state()
-    assert state["anims"] == ["typing", "idle"]
-    assert state["ids"] == [1, 2]
+    assert states(d) == ["working", "registered"]
+    assert [s["display_id"] for s in snapshot(d)] == [1, 2]
 
 
 @pytest.mark.asyncio
-async def test_display_state_overflow_with_5_sessions():
-    d = make_daemon()
-    for i in range(5):
-        sid = f"s{i}"
-        await d._handle_message({"event": "session_start", "session_id": sid})
-        await d._handle_message({"event": "tool_use", "session_id": sid})
-    state = d._compute_display_state()
-    assert len(state["anims"]) == 4  # max visible
-    assert state["overflow"] == 1
-
-
-def test_display_state_sleeping_when_no_sessions():
-    d = make_daemon()
-    state = d._compute_display_state()
-    assert state == {"status": "sleeping"}
-
-
-@pytest.mark.asyncio
-async def test_display_state_middle_session_removed():
+async def test_snapshot_after_middle_session_removed():
     d = make_daemon()
     await d._handle_message({"event": "session_start", "session_id": "aaa"})
     await d._handle_message({"event": "tool_use", "session_id": "aaa"})
@@ -700,83 +453,12 @@ async def test_display_state_middle_session_removed():
     await d._handle_message({"event": "tool_use", "session_id": "ccc"})
     # Remove middle
     await d._handle_message({"event": "dismiss", "session_id": "bbb", "hook": "SessionEnd"})
-    state = d._compute_display_state()
-    assert state["anims"] == ["typing", "typing"]
-    assert state["ids"] == [1, 3]  # id 2 gone, others preserved
+    assert [s["session_id"] for s in snapshot(d)] == ["aaa", "ccc"]
+    # Display IDs are stable: removing the middle session doesn't renumber.
+    assert [s["display_id"] for s in snapshot(d)] == [1, 3]
 
 
 # --- Per-transport protocol versioning ---
-
-
-@pytest.mark.asyncio
-async def test_v1_transport_gets_set_status():
-    """V1 transport should receive legacy set_status format."""
-    d = make_daemon()
-    transport = AsyncMock()
-    transport.is_connected = True
-    d._transports["ble"] = transport
-    d._transport_queues["ble"] = asyncio.Queue()
-    d._transport_versions["ble"] = 1
-
-    await d._handle_message({"event": "session_start", "session_id": "s1"})
-    await d._handle_message({"event": "tool_use", "session_id": "s1"})
-
-    calls = transport.write_notification.call_args_list
-    payloads = [json.loads(c[0][0]) for c in calls]
-    # Should have received set_status (v1 format), not set_sessions
-    status_payloads = [p for p in payloads if p.get("action") == "set_status"]
-    assert any(p["status"].startswith("working") for p in status_payloads)
-    assert not any(p.get("action") == "set_sessions" for p in payloads)
-
-
-@pytest.mark.asyncio
-async def test_v2_transport_gets_set_sessions():
-    """V2 transport should receive set_sessions format."""
-    d = make_daemon()
-    transport = AsyncMock()
-    transport.is_connected = True
-    d._transports["sim"] = transport
-    d._transport_queues["sim"] = asyncio.Queue()
-    d._transport_versions["sim"] = 2
-
-    await d._handle_message({"event": "session_start", "session_id": "s1"})
-    await d._handle_message({"event": "tool_use", "session_id": "s1"})
-
-    calls = transport.write_notification.call_args_list
-    payloads = [json.loads(c[0][0]) for c in calls]
-    session_payloads = [p for p in payloads if p.get("action") == "set_sessions"]
-    assert len(session_payloads) > 0
-    assert session_payloads[-1]["anims"] == ["typing"]
-
-
-@pytest.mark.asyncio
-async def test_sim_transport_auto_sets_v2():
-    """Simulator transport auto-sets to v2 on connect."""
-    d = make_daemon()
-    d._on_transport_connect("sim")
-    assert d._transport_versions.get("sim") == 2
-
-
-@pytest.mark.asyncio
-async def test_ble_transport_defaults_v1():
-    """BLE transport defaults to v1 (no auto-set)."""
-    d = make_daemon()
-    d._on_transport_connect("ble")
-    assert d._transport_versions.get("ble") is None  # defaults to 1 via .get(name, 1)
-
-
-@pytest.mark.asyncio
-async def test_ble_transport_version_read_on_connect():
-    """BLE transport should read version after connecting."""
-    d = make_daemon()
-    transport = AsyncMock()
-    transport.read_version = AsyncMock(return_value=2)
-    transport.is_connected = True
-    d._transports["ble"] = transport
-    d._transport_queues["ble"] = asyncio.Queue()
-    version = await transport.read_version()
-    d._transport_versions["ble"] = version
-    assert d._transport_versions.get("ble") == 2
 
 
 # --- Per-session sweeping (Task 6) ---
@@ -794,34 +476,7 @@ class MockTransport:
         self.written.append(payload)
 
 
-@pytest.mark.asyncio
-async def test_compact_sends_per_session_sweeping_v2():
-    """V2 transport should receive set_sessions with sweeping for the compacting session."""
-    d = make_daemon()
-    d._transport_versions["sim"] = 2
-    transport = MockTransport(name="sim")
-    d._transports["sim"] = transport
-    d._transport_queues["sim"] = asyncio.Queue()
-    await d._handle_message({"event": "session_start", "session_id": "aaa"})
-    await d._handle_message({"event": "tool_use", "session_id": "aaa"})
-    await d._handle_message({"event": "session_start", "session_id": "bbb"})
-    await d._handle_message({"event": "tool_use", "session_id": "bbb"})
-    transport.written.clear()
-    await d._handle_message({"event": "compact", "session_id": "bbb"})
-    payloads = [json.loads(p) for p in transport.written]
-    sweeping_payload = next((p for p in payloads if p.get("action") == "set_sessions"), None)
-    assert sweeping_payload is not None
-    assert sweeping_payload["anims"][1] == "sweeping"  # bbb is second
-    assert sweeping_payload["anims"][0] == "typing"    # aaa unchanged
-
-
 # --- Task 2: error state and dizzy display mapping ---
-
-
-def test_error_state_returns_dizzy():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "error", "last_event": time.time()})
-    assert d._compute_display_state() == {"anims": ["dizzy"], "ids": [1], "subagents": 0}
 
 
 @pytest.mark.asyncio
@@ -888,98 +543,7 @@ async def test_stop_then_stop_failure_overwrites_to_error():
     assert d._session_states["s1"]["state"] == "error"
 
 
-@pytest.mark.asyncio
-async def test_error_and_working_mixed():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "error", "last_event": time.time()})
-    _add_session(d, "s2", {"state": "working", "last_event": time.time()})
-    state = d._compute_display_state()
-    assert state["anims"] == ["dizzy", "typing"]
-
-
 # --- Task 2: Tool-aware animation mapping ---
-
-
-def test_working_with_bash_tool_returns_building():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "working", "last_event": time.time(), "tool_name": "Bash"})
-    state = d._compute_display_state()
-    assert state["anims"] == ["building"]
-
-
-def test_working_with_read_tool_returns_debugger():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "working", "last_event": time.time(), "tool_name": "Read"})
-    state = d._compute_display_state()
-    assert state["anims"] == ["debugger"]
-
-
-def test_working_with_grep_tool_returns_debugger():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "working", "last_event": time.time(), "tool_name": "Grep"})
-    state = d._compute_display_state()
-    assert state["anims"] == ["debugger"]
-
-
-def test_working_with_edit_tool_returns_typing():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "working", "last_event": time.time(), "tool_name": "Edit"})
-    state = d._compute_display_state()
-    assert state["anims"] == ["typing"]
-
-
-def test_working_with_websearch_returns_wizard():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "working", "last_event": time.time(), "tool_name": "WebSearch"})
-    state = d._compute_display_state()
-    assert state["anims"] == ["wizard"]
-
-
-def test_working_with_agent_returns_conducting():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "working", "last_event": time.time(), "tool_name": "Agent"})
-    state = d._compute_display_state()
-    assert state["anims"] == ["conducting"]
-
-
-def test_working_with_lsp_returns_beacon():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "working", "last_event": time.time(), "tool_name": "LSP"})
-    state = d._compute_display_state()
-    assert state["anims"] == ["beacon"]
-
-
-def test_working_with_mcp_tool_returns_beacon():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "working", "last_event": time.time(), "tool_name": "mcp__firebase__list_projects"})
-    state = d._compute_display_state()
-    assert state["anims"] == ["beacon"]
-
-
-def test_working_with_unknown_tool_returns_typing():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "working", "last_event": time.time(), "tool_name": "SomeFutureTool"})
-    state = d._compute_display_state()
-    assert state["anims"] == ["typing"]
-
-
-def test_working_no_tool_name_returns_typing():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "working", "last_event": time.time()})
-    state = d._compute_display_state()
-    assert state["anims"] == ["typing"]
-
-
-def test_subagent_override_trumps_tool_name():
-    d = make_daemon()
-    _add_session(d, "s1", {
-        "state": "working",
-        "last_event": time.time(),
-        "tool_name": "Read",
-        "subagents": {"agent-1"},
-    })
-    state = d._compute_display_state()
-    assert state["anims"] == ["conducting"]
 
 
 # --- AskUserQuestion → "waiting" state + alert animation ---
@@ -994,20 +558,6 @@ async def test_ask_user_question_tool_use_sets_waiting():
         "event": "tool_use", "session_id": "s1", "tool_name": "AskUserQuestion",
     })
     assert d._session_states["s1"]["state"] == "waiting"
-
-
-def test_waiting_session_returns_alert():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "waiting", "last_event": time.time()})
-    assert d._compute_display_state() == {"anims": ["alert"], "ids": [1], "subagents": 0}
-
-
-def test_waiting_and_working_mixed():
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "waiting", "last_event": time.time()})
-    _add_session(d, "s2", {"state": "working", "last_event": time.time(), "tool_name": "Bash"})
-    state = d._compute_display_state()
-    assert state["anims"] == ["alert", "building"]
 
 
 @pytest.mark.asyncio
@@ -1052,26 +602,6 @@ async def test_waiting_clears_on_next_tool_use():
         "event": "tool_use", "session_id": "s1", "tool_name": "Edit",
     })
     assert d._session_states["s1"]["state"] == "working"
-
-
-def test_waiting_outranks_subagents():
-    """'needs you' is the most actionable signal, so the alert outranks the subagent
-    'conducting' indicator when a session with subagents is also blocked on the human."""
-    d = make_daemon()
-    _add_session(d, "s1", {
-        "state": "waiting", "last_event": time.time(), "subagents": {"a1"},
-    })
-    state = d._compute_display_state()
-    assert state["anims"] == ["alert"]
-
-
-def test_working_with_subagents_still_conducting():
-    """Regression: a non-waiting working session with subagents still shows conducting."""
-    d = make_daemon()
-    _add_session(d, "s1", {
-        "state": "working", "last_event": time.time(), "tool_name": "Read", "subagents": {"a1"},
-    })
-    assert d._compute_display_state()["anims"] == ["conducting"]
 
 
 @pytest.mark.asyncio
@@ -1172,64 +702,6 @@ async def test_tool_failed_confused_clears_on_prompt_submit():
     assert d._session_states["s1"]["state"] == "thinking"
 
 
-@pytest.mark.asyncio
-async def test_tool_failed_does_not_create_notification_card():
-    """A tool failure is a transient state change, not a persistent notification card."""
-    d = make_daemon()
-    d._active_notifications.clear()
-    await d._handle_message({"event": "tool_failed", "session_id": "s1", "tool_name": "Read"})
-    assert "s1" not in d._active_notifications
-
-
-def test_idle_session_keeps_own_anim_when_notifications_active():
-    """Idle sessions keep their own animation even when notifications are present."""
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "idle", "last_event": time.time()})
-    _add_session(d, "s2", {"state": "working", "last_event": time.time(), "tool_name": "Read"})
-    d._active_notifications["s1"] = {"event": "add", "session_id": "s1"}
-    state = d._compute_display_state()
-    assert state["anims"] == ["idle", "debugger"]
-
-
-def test_idle_session_stays_idle_with_multiple_working_sessions():
-    """Idle sessions stay idle regardless of working sessions and notifications."""
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "idle", "last_event": time.time()})
-    _add_session(d, "s2", {"state": "working", "last_event": time.time() - 10, "tool_name": "Read"})
-    _add_session(d, "s3", {"state": "working", "last_event": time.time(), "tool_name": "Bash"})
-    d._active_notifications["s1"] = {"event": "add", "session_id": "s1"}
-    state = d._compute_display_state()
-    assert state["anims"][0] == "idle"  # s1 keeps its own idle animation
-
-
-def test_idle_stays_idle_when_no_working_sessions():
-    """All sessions idle — no working session to mirror, so stays idle."""
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "idle", "last_event": time.time()})
-    _add_session(d, "s2", {"state": "idle", "last_event": time.time()})
-    d._active_notifications["s1"] = {"event": "add", "session_id": "s1"}
-    state = d._compute_display_state()
-    assert state["anims"] == ["idle", "idle"]
-
-
-def test_idle_stays_idle_when_no_notifications():
-    """No notifications — idle sessions show idle even if others are working."""
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "idle", "last_event": time.time()})
-    _add_session(d, "s2", {"state": "working", "last_event": time.time(), "tool_name": "Bash"})
-    state = d._compute_display_state()
-    assert state["anims"] == ["idle", "building"]
-
-
-def test_single_idle_session_with_notification_stays_idle():
-    """Single session idle with notification — no other working session, stays idle."""
-    d = make_daemon()
-    _add_session(d, "s1", {"state": "idle", "last_event": time.time()})
-    d._active_notifications["s1"] = {"event": "add", "session_id": "s1"}
-    state = d._compute_display_state()
-    assert state["anims"] == ["idle"]
-
-
 # --- PID + monotonic tracking (ghost-crab fix) ---
 
 @pytest.mark.asyncio
@@ -1265,47 +737,6 @@ async def test_message_without_pid_field_does_not_crash():
     assert "s1" in d._session_states
     # pid should be None (or absent) — explicit absence, not error
     assert d._session_states["s1"].get("pid") is None
-
-
-def test_init_stamps_monotonic_on_loaded_sessions(tmp_path):
-    """After daemon restart, loaded sessions get fresh last_event_monotonic."""
-    from clawd_tank_daemon.session_store import save_sessions
-    sessions_path = tmp_path / "sessions.json"
-    save_sessions({"s1": {"state": "idle", "last_event": time.time()}}, sessions_path)
-
-    from clawd_tank_daemon.daemon import ClawdDaemon
-    d = ClawdDaemon(sim_only=True, sessions_path=sessions_path)
-    d._transports.clear()
-    d._transport_queues.clear()
-
-    assert "s1" in d._session_states
-    assert "last_event_monotonic" in d._session_states["s1"]
-    assert isinstance(d._session_states["s1"]["last_event_monotonic"], float)
-
-
-def test_init_prunes_wall_clock_stale_sessions(tmp_path):
-    """Startup prune: sessions with wall-clock last_event older than 10min
-    are removed at init (their Claude Code process is almost certainly dead)."""
-    from clawd_tank_daemon.session_store import save_sessions
-    sessions_path = tmp_path / "sessions.json"
-    save_sessions(
-        {
-            "fresh": {"state": "idle", "last_event": time.time()},
-            "stale": {"state": "idle", "last_event": time.time() - 3600},  # 1h ago
-        },
-        sessions_path,
-        order=[("fresh", 1), ("stale", 2)],
-        next_id=3,
-    )
-
-    from clawd_tank_daemon.daemon import ClawdDaemon
-    d = ClawdDaemon(sim_only=True, sessions_path=sessions_path)
-    d._transports.clear()
-    d._transport_queues.clear()
-
-    assert "fresh" in d._session_states
-    assert "stale" not in d._session_states
-    assert d._session_order == [("fresh", 1)]
 
 
 # --- Task 7: monotonic-based staleness eviction ---
@@ -1400,25 +831,6 @@ async def test_session_start_without_pid_does_not_dedup():
 
 
 @pytest.mark.asyncio
-async def test_dedup_scrubs_active_notifications():
-    """Evicted session's notification card is also removed."""
-    d = make_daemon()
-    d._session_states["old"] = {
-        "state": "idle",
-        "last_event": time.time(),
-        "last_event_monotonic": time.monotonic(),
-        "pid": 4242,
-    }
-    d._active_notifications["old"] = {"event": "add", "session_id": "old"}
-    d._session_order = [("old", 1)]
-    d._next_display_id = 2
-
-    await d._handle_message({"event": "session_start", "session_id": "new", "pid": 4242})
-
-    assert "old" not in d._active_notifications
-
-
-@pytest.mark.asyncio
 async def test_dedup_only_fires_on_session_start():
     """A tool_use event with matching PID does NOT trigger dedup."""
     d = make_daemon()
@@ -1501,14 +913,87 @@ def test_liveness_treats_permission_error_as_alive():
     assert "s1" in d._session_states
 
 
+# --- Startup load, prune and persistence ---
+
+def test_daemon_loads_on_init(tmp_path):
+    path = tmp_path / "sessions.json"
+    path.write_text(json.dumps({
+        "s1": {"state": "working", "last_event": time.time()},
+    }))
+    d = make_daemon(sessions_path=path)
+    assert "s1" in d._session_states
+    assert d._session_states["s1"]["state"] == "working"
+
+
+def test_daemon_loads_subagents_as_sets(tmp_path):
+    path = tmp_path / "sessions.json"
+    path.write_text(json.dumps({
+        "s1": {
+            "state": "idle",
+            "last_event": time.time(),
+            "subagents": ["a1", "a2"],
+        },
+    }))
+    d = make_daemon(sessions_path=path)
+    assert d._session_states["s1"]["subagents"] == {"a1", "a2"}
+    assert isinstance(d._session_states["s1"]["subagents"], set)
+
+
+def test_daemon_evicts_stale_sessions_on_startup(tmp_path):
+    """Stale sessions from disk are evicted immediately, not after 30s."""
+    path = tmp_path / "sessions.json"
+    path.write_text(json.dumps({
+        "stale": {"state": "working", "last_event": time.time() - 9999},
+        "fresh": {"state": "idle", "last_event": time.time()},
+    }))
+    d = make_daemon(sessions_path=path)
+    assert "stale" not in d._session_states
+    assert "fresh" in d._session_states
+
+
+def test_init_stamps_monotonic_on_loaded_sessions(tmp_path):
+    """After daemon restart, loaded sessions get fresh last_event_monotonic."""
+    from clawd_tank_daemon.session_store import save_sessions
+    sessions_path = tmp_path / "sessions.json"
+    save_sessions({"s1": {"state": "idle", "last_event": time.time()}}, sessions_path)
+
+    from clawd_tank_daemon.daemon import ClawdDaemon
+    d = make_daemon(sessions_path=sessions_path)
+
+    assert "s1" in d._session_states
+    assert "last_event_monotonic" in d._session_states["s1"]
+    assert isinstance(d._session_states["s1"]["last_event_monotonic"], float)
+
+
+def test_init_prunes_wall_clock_stale_sessions(tmp_path):
+    """Startup prune: sessions with wall-clock last_event older than 10min
+    are removed at init (their Claude Code process is almost certainly dead)."""
+    from clawd_tank_daemon.session_store import save_sessions
+    sessions_path = tmp_path / "sessions.json"
+    save_sessions(
+        {
+            "fresh": {"state": "idle", "last_event": time.time()},
+            "stale": {"state": "idle", "last_event": time.time() - 3600},  # 1h ago
+        },
+        sessions_path,
+        order=[("fresh", 1), ("stale", 2)],
+        next_id=3,
+    )
+
+    from clawd_tank_daemon.daemon import ClawdDaemon
+    d = make_daemon(sessions_path=sessions_path)
+
+    assert "fresh" in d._session_states
+    assert "stale" not in d._session_states
+    assert d._session_order == [("fresh", 1)]
+
+
 def test_liveness_persists_after_eviction(tmp_path):
     """After evicting a dead session, the persisted sessions.json reflects it."""
     from unittest.mock import patch
     from clawd_tank_daemon.daemon import ClawdDaemon
 
-    d = ClawdDaemon(sim_only=True, sessions_path=tmp_path / "sessions.json")
-    d._transports.clear()
-    d._transport_queues.clear()
+    d = make_daemon(sessions_path=tmp_path / "sessions.json")
     d._session_states["s1"] = {
         "state": "idle", "last_event": time.time(),
         "last_event_monotonic": time.monotonic(), "pid": 4242,

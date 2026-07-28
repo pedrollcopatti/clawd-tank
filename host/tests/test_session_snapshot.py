@@ -75,20 +75,14 @@ def test_missing_fields_fall_back_to_defaults():
     }]
 
 
-def test_not_capped_at_four_unlike_display_state():
-    """The device shows at most four Clawds; the UI shows every session."""
-    states = {f"s{i}": _state(project=f"p{i}") for i in range(6)}
-    order = [(f"s{i}", i + 1) for i in range(6)]
+def test_not_capped():
+    """Every session is reported; the popover scrolls rather than truncating."""
+    states = {f"s{i}": _state(project=f"p{i}") for i in range(12)}
+    order = [(f"s{i}", i + 1) for i in range(12)]
 
     snapshot = build_session_snapshot(states, order)
-    assert len(snapshot) == 6
-
-    d = ClawdDaemon(sim_only=True)
-    d._session_states = states
-    d._session_order = order
-    device_state = d._compute_display_state()
-    assert len(device_state["anims"]) == 4
-    assert device_state["overflow"] == 2
+    assert len(snapshot) == 12
+    assert [s["project"] for s in snapshot] == [f"p{i}" for i in range(12)]
 
 
 def test_snapshot_shares_no_mutable_state_with_the_daemon():
@@ -117,7 +111,7 @@ def test_subagents_is_a_count_not_a_set():
 @pytest.mark.asyncio
 async def test_reflects_real_session_lifecycle():
     """End-to-end through _handle_message rather than hand-built dicts."""
-    d = ClawdDaemon(sim_only=True)
+    d = ClawdDaemon()
     await d._handle_message({
         "event": "session_start", "session_id": "s1", "project": "clawd-tank",
     })

@@ -1,18 +1,13 @@
 # host/tests/test_observer.py
 import asyncio
 import pytest
-from unittest.mock import AsyncMock
 from clawd_tank_daemon import daemon as daemon_mod
 from clawd_tank_daemon.daemon import ClawdDaemon
 
 
 class MockObserver:
     def __init__(self):
-        self.connection_changes = []
         self.snapshots = []
-
-    def on_connection_change(self, connected: bool, transport: str = "") -> None:
-        self.connection_changes.append(connected)
 
     def on_sessions_change(self, snapshot: list[dict]) -> None:
         self.snapshots.append(snapshot)
@@ -43,12 +38,11 @@ async def test_observer_gets_snapshot_after_session_start(fast_coalesce):
 
 
 @pytest.mark.asyncio
-async def test_snapshot_fires_when_device_display_state_is_unchanged(fast_coalesce):
-    """Read and Grep both map to the "debugger" animation, so the device payload
-    is byte-identical — but the popover's tool text changed and must update.
+async def test_snapshot_fires_when_only_the_tool_changed(fast_coalesce):
+    """Read and Grep leave the session in the same state and draw the same
+    sprite, but the row's text changed — the UI still has to be told.
 
-    This is the regression the whole design hinges on: the snapshot push must not
-    be gated on _compute_display_state() changing.
+    The push must not be gated on any coarser derived view of the state.
     """
     observer = MockObserver()
     daemon = ClawdDaemon(observer=observer)
@@ -57,17 +51,14 @@ async def test_snapshot_fires_when_device_display_state_is_unchanged(fast_coales
         {"event": "tool_use", "session_id": "s1", "tool_name": "Read"}
     )
     await asyncio.sleep(fast_coalesce)
-    device_state_after_read = daemon._compute_display_state()
 
     await daemon._handle_message(
         {"event": "tool_use", "session_id": "s1", "tool_name": "Grep"}
     )
     await asyncio.sleep(fast_coalesce)
 
-    # Device sees no change...
-    assert daemon._compute_display_state() == device_state_after_read
-    # ...but the UI got a second snapshot with the new tool.
     assert len(observer.snapshots) == 2
+    assert observer.snapshots[0][0]["state"] == observer.snapshots[1][0]["state"]
     assert observer.snapshots[0][0]["tool_name"] == "Read"
     assert observer.snapshots[1][0]["tool_name"] == "Grep"
 
@@ -170,13 +161,12 @@ async def test_observer_that_raises_does_not_break_message_handling(fast_coalesc
 
 @pytest.mark.asyncio
 async def test_no_observer_does_not_crash():
-    """ClawdDaemon without an observer must consume events without crashing,
-    and without tracking them as cards."""
+    """ClawdDaemon without an observer must consume events without crashing."""
     daemon = ClawdDaemon()
     await daemon._handle_message(
-        {"event": "add", "session_id": "s1", "project": "p", "message": "m"}
+        {"event": "add", "hook": "Stop", "session_id": "s1", "project": "p",
+         "message": "m"}
     )
-    assert "s1" not in daemon._active_notifications
     assert daemon._snapshot_task is None
 
 
@@ -187,52 +177,3 @@ async def test_notify_outside_a_running_loop_is_a_no_op():
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, daemon._notify_sessions_changed)
     assert daemon._snapshot_task is None
-
-
-# --- Connection callback ---
-
-
-@pytest.mark.asyncio
-async def test_observer_connection_via_disconnect_callback():
-    """Transport disconnect callback triggers observer."""
-    observer = MockObserver()
-    daemon = ClawdDaemon(observer=observer)
-    # Mark BLE transport as disconnected so any() returns False
-    mock_transport = AsyncMock()
-    mock_transport.is_connected = False
-    daemon._transports["ble"] = mock_transport
-    daemon._on_transport_disconnect("ble")
-    assert observer.connection_changes == [False]
-
-
-@pytest.mark.asyncio
-async def test_observer_connection_true_on_transport_sender_connect():
-    """_transport_sender fires on_connection_change(True) after reconnect."""
-    observer = MockObserver()
-    daemon = ClawdDaemon(observer=observer)
-    mock_transport = AsyncMock()
-    mock_transport.is_connected = False
-
-    async def fake_ensure():
-        mock_transport.is_connected = True
-        # Real transports call on_connect_cb when connecting succeeds
-        daemon._on_transport_connect("ble")
-
-    mock_transport.ensure_connected = AsyncMock(side_effect=fake_ensure)
-    mock_transport.write_notification = AsyncMock(return_value=True)
-    daemon._transports["ble"] = mock_transport
-
-    await daemon._transport_queues["ble"].put(
-        {"event": "dismiss", "session_id": "s1"}
-    )
-
-    sender = asyncio.create_task(daemon._transport_sender("ble"))
-    await asyncio.sleep(0.1)
-    daemon._running = False
-    sender.cancel()
-    try:
-        await sender
-    except asyncio.CancelledError:
-        pass
-
-    assert True in observer.connection_changes

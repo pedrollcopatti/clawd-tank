@@ -87,9 +87,15 @@ def test_waiting_beats_subagents_in_the_description():
 
 @pytest.mark.parametrize("tool,expected", [
     ("Edit", "typing"),
+    ("Write", "typing"),
     ("Read", "debugger"),
+    ("Grep", "debugger"),
+    ("Glob", "debugger"),
     ("Bash", "building"),
+    ("Agent", "conducting"),
     ("WebSearch", "wizard"),
+    ("WebFetch", "wizard"),
+    ("LSP", "beacon"),
     ("mcp__anything__at_all", "beacon"),
     ("UnknownTool", "typing"),
     ("", "typing"),
@@ -134,10 +140,28 @@ def test_sprite_and_accent_per_state(state, sprite, accent):
     assert row.accent == accent
 
 
+def test_registered_shows_the_idle_sprite():
+    assert build_row_models([session(state="registered")], now=NOW)[0].sprite == "idle"
+
+
 def test_subagents_switch_the_sprite_to_conducting():
     row = build_row_models([session(subagents=2)], now=NOW)[0]
     assert row.sprite == "conducting"
     assert row.subagents == 2
+
+
+def test_waiting_outranks_subagents_for_the_sprite():
+    """"Needs you" must never be masked by the delegation indicator."""
+    row = build_row_models([session(state="waiting", subagents=3)], now=NOW)[0]
+    assert row.sprite == "alert"
+    assert row.accent == "waiting"
+
+
+def test_subagents_override_the_tool_sprite():
+    """A session that farmed work out is conducting, whatever it last touched."""
+    row = build_row_models([session(state="working", tool_name="Bash", subagents=1)],
+                           now=NOW)[0]
+    assert row.sprite == "conducting"
 
 
 def test_blank_project_falls_back_rather_than_rendering_empty():
