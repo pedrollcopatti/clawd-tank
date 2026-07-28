@@ -59,7 +59,7 @@ def test_many_sessions_are_capped_and_scroll(controller):
     The half row is deliberate: a clipped row is the affordance that tells you
     there is more to scroll to.
     """
-    from clawd_tank_menubar.popover import FOOTER_H, MAX_ROWS_H
+    from clawd_tank_menubar.popover import FOOTER_H, MAX_ROWS_H, STATS_H
 
     controller.reload([session(session_id=f"s{i}") for i in range(5)])
     five = controller._content.frame().size.height
@@ -67,7 +67,8 @@ def test_many_sessions_are_capped_and_scroll(controller):
     twelve = controller._content.frame().size.height
 
     assert len(controller._rows) == 12
-    assert five == twelve == MAX_ROWS_H + 1 + FOOTER_H
+    # Two separators: rows | stats | footer.
+    assert five == twelve == MAX_ROWS_H + 1 + STATS_H + 1 + FOOTER_H
 
 
 def test_reload_is_idempotent_and_does_not_leak_subviews(controller):

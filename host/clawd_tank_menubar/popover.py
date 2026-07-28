@@ -20,12 +20,15 @@ from .session_focus import activation_command, resolve_host_app, session_cwd
 from .session_row import (
     ROW_H,
     ROW_W,
+    STATS_H,
     build_empty_state,
     build_separator,
     build_session_row,
+    build_stats_block,
 )
 from .session_view_model import build_empty_state as empty_state_model
 from .session_view_model import build_row_models, footer_text
+from .usage_stats import UsageStats, collect_usage_stats
 
 logger = logging.getLogger("clawd-tank.popover")
 
@@ -83,6 +86,7 @@ class SessionPopoverController:
         self._rows = []
         self._models = []
         self._snapshot = []
+        self._stats = UsageStats()
         self._tick_timer = None
         self._click_monitor = None
 
@@ -120,11 +124,23 @@ class SessionPopoverController:
         self._rows = []
 
         rows_h = self._build_rows()
-        total_h = rows_h + 1 + FOOTER_H
+        stats_top = rows_h + 1
+        footer_top = stats_top + STATS_H + 1
+        total_h = footer_top + FOOTER_H
 
         self._content.setFrameSize_(AppKit.NSMakeSize(ROW_W, total_h))
-        self._build_footer(rows_h)
+        self._build_stats(rows_h, stats_top)
+        self._build_footer(stats_top + STATS_H, footer_top)
         self._popover.setContentSize_(AppKit.NSMakeSize(ROW_W, total_h))
+
+    def refresh_usage(self) -> None:
+        """Re-read today's usage. Called when the popover opens, not on every
+        snapshot push — the numbers move slowly and the scan touches disk."""
+        try:
+            self._stats = collect_usage_stats()
+        except Exception:
+            logger.exception("Could not read usage stats")
+            self._stats = UsageStats()
 
     # --- Content ---
 
@@ -163,9 +179,18 @@ class SessionPopoverController:
         self._content.addSubview_(scroll)
         return visible_h
 
-    def _build_footer(self, rows_h: float) -> None:
+    def _build_stats(self, separator_y: float, top: float) -> None:
         separator = build_separator()
-        separator.setFrameOrigin_(AppKit.NSMakePoint(0, rows_h))
+        separator.setFrameOrigin_(AppKit.NSMakePoint(0, separator_y))
+        self._content.addSubview_(separator)
+
+        block = build_stats_block(self._stats)
+        block.setFrameOrigin_(AppKit.NSMakePoint(0, top))
+        self._content.addSubview_(block)
+
+    def _build_footer(self, separator_y: float, rows_h: float) -> None:
+        separator = build_separator()
+        separator.setFrameOrigin_(AppKit.NSMakePoint(0, separator_y))
         self._content.addSubview_(separator)
 
         target = self._settings_target()
@@ -243,6 +268,7 @@ class SessionPopoverController:
     # --- Show / hide ---
 
     def show(self, button) -> None:
+        self.refresh_usage()
         self.reload(self._snapshot)
         # An LSUIElement app that has never been active can leave a transient
         # popover without a resign-active event to close on.

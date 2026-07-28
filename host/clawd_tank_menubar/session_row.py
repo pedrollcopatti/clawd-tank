@@ -55,8 +55,9 @@ class ClickableRowView(AppKit.NSView):
     as it is and adds only the behaviour.
     """
 
-    def isFlipped(self):
-        return True
+    # Deliberately NOT flipped: the row's own subviews are laid out bottom-up
+    # like any ordinary NSView. Only the container that stacks rows is flipped,
+    # so they read top to bottom.
 
     def acceptsFirstMouse_(self, event):
         # The popover isn't key when it first appears, so without this the first
@@ -270,6 +271,58 @@ def build_empty_state(model) -> AppKit.NSView:
     detail.setFrame_(AppKit.NSMakeRect(12, 12, ROW_W - 24, 15))
     detail.setAutoresizingMask_(AppKit.NSViewWidthSizable)
     view.addSubview_(detail)
+
+    return view
+
+
+STATS_H = 64.0
+
+
+def build_stats_block(stats) -> AppKit.NSView:
+    """Today's usage: a header line and three stat tiles.
+
+    Takes a UsageStats rather than pre-formatted text so the number formatting
+    stays in usage_stats.py, where it can be tested without a window server.
+    """
+    from .usage_stats import stat_tiles, stats_caption
+
+    view = AppKit.NSView.alloc().initWithFrame_(
+        AppKit.NSMakeRect(0, 0, ROW_W, STATS_H)
+    )
+    view.setAutoresizingMask_(AppKit.NSViewWidthSizable)
+
+    heading = _label(10, AppKit.NSColor.tertiaryLabelColor(), AppKit.NSFontWeightSemibold)
+    heading.setStringValue_("TODAY")
+    heading.setFrame_(AppKit.NSMakeRect(14, 43, 80, 13))
+    view.addSubview_(heading)
+
+    caption = _label(10, AppKit.NSColor.tertiaryLabelColor())
+    caption.setStringValue_(stats_caption(stats))
+    caption.setAlignment_(AppKit.NSTextAlignmentRight)
+    caption.setFrame_(AppKit.NSMakeRect(ROW_W - 14 - 210, 43, 210, 13))
+    caption.setAutoresizingMask_(AppKit.NSViewMinXMargin)
+    view.addSubview_(caption)
+
+    tiles = stat_tiles(stats)
+    column = (ROW_W - 28) / len(tiles)
+    for index, (value, label) in enumerate(tiles):
+        x = 14 + index * column
+
+        number = _label(16, AppKit.NSColor.labelColor(), AppKit.NSFontWeightMedium)
+        number.setStringValue_(value)
+        number.setAlignment_(AppKit.NSTextAlignmentCenter)
+        # Monospaced digits so the tiles don't shift as the counts grow.
+        number.setFont_(AppKit.NSFont.monospacedDigitSystemFontOfSize_weight_(
+            16, AppKit.NSFontWeightMedium
+        ))
+        number.setFrame_(AppKit.NSMakeRect(x, 20, column, 20))
+        view.addSubview_(number)
+
+        caption_label = _label(10, AppKit.NSColor.tertiaryLabelColor())
+        caption_label.setStringValue_(label)
+        caption_label.setAlignment_(AppKit.NSTextAlignmentCenter)
+        caption_label.setFrame_(AppKit.NSMakeRect(x, 7, column, 13))
+        view.addSubview_(caption_label)
 
     return view
 
