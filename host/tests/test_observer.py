@@ -17,29 +17,32 @@ class MockObserver:
         self.notification_changes.append(count)
 
 
+# Banner cards are disabled, so the observer's notification count stays 0 — the
+# observer is still notified on every message, it just never reports a card.
+
 @pytest.mark.asyncio
-async def test_observer_notification_add():
+async def test_observer_notification_count_stays_zero_on_add():
     observer = MockObserver()
     daemon = ClawdDaemon(observer=observer)
     await daemon._handle_message(
         {"event": "add", "session_id": "s1", "project": "p", "message": "m"}
     )
-    assert observer.notification_changes == [1]
+    assert observer.notification_changes == [0]
 
 
 @pytest.mark.asyncio
-async def test_observer_notification_dismiss():
+async def test_observer_notification_count_stays_zero_on_dismiss():
     observer = MockObserver()
     daemon = ClawdDaemon(observer=observer)
     await daemon._handle_message(
         {"event": "add", "session_id": "s1", "project": "p", "message": "m"}
     )
     await daemon._handle_message({"event": "dismiss", "session_id": "s1"})
-    assert observer.notification_changes == [1, 0]
+    assert observer.notification_changes == [0, 0]
 
 
 @pytest.mark.asyncio
-async def test_observer_notification_add_multiple():
+async def test_observer_notification_count_stays_zero_with_multiple_adds():
     observer = MockObserver()
     daemon = ClawdDaemon(observer=observer)
     await daemon._handle_message(
@@ -48,17 +51,18 @@ async def test_observer_notification_add_multiple():
     await daemon._handle_message(
         {"event": "add", "session_id": "s2", "project": "p", "message": "m"}
     )
-    assert observer.notification_changes == [1, 2]
+    assert observer.notification_changes == [0, 0]
 
 
 @pytest.mark.asyncio
 async def test_no_observer_does_not_crash():
-    """ClawdDaemon without observer must work exactly as before."""
+    """ClawdDaemon without observer must consume an add event without crashing,
+    and without tracking it as a card."""
     daemon = ClawdDaemon()
     await daemon._handle_message(
         {"event": "add", "session_id": "s1", "project": "p", "message": "m"}
     )
-    assert "s1" in daemon._active_notifications
+    assert "s1" not in daemon._active_notifications
 
 
 @pytest.mark.asyncio

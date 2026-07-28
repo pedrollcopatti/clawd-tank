@@ -42,6 +42,11 @@
 
 #define SCENE_HEIGHT       172
 #define GRASS_HEIGHT       14
+
+/* Simulator only: enlarge Clawd's sprite so it stays prominent in a small
+ * desktop strip. Anchored at the bottom; taller animations clip at the top.
+ * Easy to tweak (1.0 = native size). */
+#define CLAWD_SIM_ZOOM     2.0f
 #define STAR_COUNT         6
 #define STAR_TWINKLE_MIN   2000
 #define STAR_TWINKLE_MAX   4000
@@ -408,6 +413,14 @@ static void decode_and_apply_frame(clawd_slot_t *slot)
 #endif
 
     lv_image_set_src(slot->sprite_img, &slot->frame_dsc);
+
+#ifdef SIMULATOR
+    /* Enlarge Clawd in the desktop strip: scale the sprite up around its
+     * bottom-centre so it grows into the (empty) sky rather than off the grass.
+     * Taller animations clip at the container top — acceptable here. */
+    lv_image_set_pivot(slot->sprite_img, w / 2, h);
+    lv_image_set_scale(slot->sprite_img, (uint32_t)(LV_SCALE_NONE * CLAWD_SIM_ZOOM));
+#endif
 }
 
 static uint32_t random_range(uint32_t min_val, uint32_t max_val)
@@ -823,6 +836,10 @@ void scene_set_fallback_anim(scene_t *scene, clawd_anim_id_t anim)
 void scene_set_time_visible(scene_t *scene, bool visible)
 {
     if (!scene) return;
+#ifdef SIMULATOR
+    /* The desktop strip hides the clock to give Clawd more room. */
+    visible = false;
+#endif
     if (visible)
         lv_obj_clear_flag(scene->time_label, LV_OBJ_FLAG_HIDDEN);
     else
@@ -1058,7 +1075,8 @@ static void scene_update_hud(scene_t *s, uint8_t subagent_count, uint8_t overflo
         int text_w = (int)strlen(buf) * 6 * 2;  /* chars * (5+1 gap) * px_size */
         pixel_font_draw(s->hud_badge_canvas, buf, 48 - text_w, 1, 2, lv_color_hex(0x8BC6FC));
         /* Position at right edge of scene area: use negative x-offset from screen right */
-        int x_from_right = -(320 - s->target_width) - 1;
+        int screen_w = lv_display_get_horizontal_resolution(lv_display_get_default());
+        int x_from_right = -(screen_w - s->target_width) - 1;
         lv_obj_align(s->hud_badge_canvas, LV_ALIGN_TOP_RIGHT, x_from_right, 4);
         lv_obj_clear_flag(s->hud_badge_canvas, LV_OBJ_FLAG_HIDDEN);
     } else {

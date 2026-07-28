@@ -219,10 +219,12 @@ class ClawdDaemon:
         logger.info("Socket msg: event=%s hook=%s session=%s%s%s",
                      event, hook, session_id[:12], session_project, extra)
 
-        if event == "add":
-            self._active_notifications[session_id] = msg
-        elif event == "dismiss":
-            self._active_notifications.pop(session_id, None)
+        # Notification banner cards are disabled: the device shows Clawd's
+        # session animations only, never a bottom-bar card (and so never the
+        # LED border flash that accompanied one). We keep reacting to add/dismiss
+        # events for their session-state side effects (Stop → idle, StopFailure →
+        # error, Notification → confused, UserPromptSubmit → thinking) below, but
+        # never track them as cards to render.
 
         # --- PID-based dedup: SessionStart with PID matching a recent session = /clear ---
         if event == "session_start":
@@ -288,8 +290,11 @@ class ClawdDaemon:
                     await transport.write_notification(fallback_payload)
             self._last_display_state = computed
 
-        for q in self._transport_queues.values():
-            await q.put(msg)
+        # Card events (add/dismiss/clear) are the only messages the transport
+        # sender turns into device payloads, and banner cards are disabled — so
+        # nothing is enqueued from here anymore. The device is driven entirely by
+        # the display-state broadcast below; any session-state side effects of an
+        # add/dismiss were already applied in _update_session_state.
 
         if self._observer:
             self._observer.on_notification_change(len(self._active_notifications))

@@ -25,6 +25,9 @@ int ui_manager_get_frame_idx(void);
 
 // Get the scene pointer (for query_state inspection from main thread).
 scene_t *ui_manager_get_scene(void);
+
+// Re-apply the full-width layout after the simulator window is resized.
+void ui_manager_relayout(void);
 #endif
 
 #endif // UI_MANAGER_H

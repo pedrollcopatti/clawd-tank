@@ -21,9 +21,14 @@ typedef enum {
     UI_STATE_DISCONNECTED,
 } ui_state_t;
 
-#define SCENE_FULL_WIDTH   320
-#define SCENE_NOTIF_WIDTH  107
 #define SCENE_ANIM_MS      400
+
+/* Full scene width = the display's horizontal resolution. On firmware this is
+ * always 320; in the simulator it tracks the (freely resizable) window width. */
+static int scene_full_width(void)
+{
+    return lv_display_get_horizontal_resolution(lv_display_get_default());
+}
 
 /* ---------- Module state ---------- */
 
@@ -95,12 +100,11 @@ static void transition_to(ui_state_t new_state)
 {
     if (new_state == s_state) return;
 
-    ui_state_t old_state = s_state;
     s_state = new_state;
 
     switch (new_state) {
     case UI_STATE_FULL_IDLE:
-        scene_animate_width(SCENE_FULL_WIDTH, SCENE_ANIM_MS);
+        scene_animate_width(scene_full_width(), SCENE_ANIM_MS);
         notification_ui_show(s_notif_ui, false, 0);
 
         scene_set_time_visible(s_scene, true);
@@ -120,8 +124,10 @@ static void transition_to(ui_state_t new_state)
         break;
 
     case UI_STATE_NOTIFICATION:
-        scene_animate_width(SCENE_NOTIF_WIDTH,
-                            old_state == UI_STATE_FULL_IDLE ? SCENE_ANIM_MS : 0);
+        /* Keep the scene at full width — the notification floats over it as a
+         * banner instead of shrinking Clawd into a corner. Just (re)flow the
+         * banner to the current display size and fade it in. */
+        notification_ui_set_x(s_notif_ui, 0);
         notification_ui_show(s_notif_ui, true, 300);
 
         scene_set_time_visible(s_scene, false);
@@ -135,7 +141,7 @@ static void transition_to(ui_state_t new_state)
         break;
 
     case UI_STATE_DISCONNECTED:
-        scene_animate_width(SCENE_FULL_WIDTH, SCENE_ANIM_MS);
+        scene_animate_width(scene_full_width(), SCENE_ANIM_MS);
         notification_ui_show(s_notif_ui, false, 0);
 
         scene_set_time_visible(s_scene, false);
@@ -157,7 +163,7 @@ void ui_manager_init(void)
 
     /* Create scene (left panel — starts full width) */
     s_scene = scene_create(screen);
-    scene_set_width(s_scene, SCENE_FULL_WIDTH, 0);
+    scene_set_width(s_scene, scene_full_width(), 0);
     scene_set_clawd_anim(s_scene, CLAWD_ANIM_DISCONNECTED);
 
     /* Create notification UI (right panel — starts hidden) */
@@ -310,6 +316,21 @@ int ui_manager_get_frame_idx(void)
 scene_t *ui_manager_get_scene(void)
 {
     return s_scene;
+}
+
+void ui_manager_relayout(void)
+{
+    _lock_acquire(&s_lock);
+    /* The simulator window was resized → the LVGL display width changed.
+     * Re-stretch the scene to fill it. The notification banner floats over the
+     * scene at full width, so this applies in every state. */
+    if (s_scene) {
+        scene_set_width(s_scene, scene_full_width(), 0);
+        if (s_notif_ui) {
+            notification_ui_set_x(s_notif_ui, scene_full_width());
+        }
+    }
+    _lock_release(&s_lock);
 }
 #endif
 

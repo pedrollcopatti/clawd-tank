@@ -17,84 +17,54 @@ class FakeObserver:
         self.notification_changes.append(count)
 
 
+# --- Notification banner cards are disabled ---
+# The device shows Clawd's session animations only; add/dismiss events are still
+# consumed for their session-state side effects but never become banner cards,
+# are never tracked in _active_notifications, and are never enqueued for delivery.
+
 @pytest.mark.asyncio
-async def test_handle_add_tracks_notification():
+async def test_add_event_creates_no_card():
     daemon = ClawdDaemon()
     msg = {"event": "add", "session_id": "s1", "project": "proj", "message": "hi"}
     await daemon._handle_message(msg)
-    assert "s1" in daemon._active_notifications
-    assert daemon._transport_queues["ble"].qsize() == 1
+    assert "s1" not in daemon._active_notifications
+    assert daemon._transport_queues["ble"].qsize() == 0
 
 
 @pytest.mark.asyncio
-async def test_handle_dismiss_removes_notification():
+async def test_dismiss_event_creates_no_card():
     daemon = ClawdDaemon()
     await daemon._handle_message(
         {"event": "add", "session_id": "s1", "project": "p", "message": "m"}
     )
     await daemon._handle_message({"event": "dismiss", "session_id": "s1"})
     assert "s1" not in daemon._active_notifications
-    assert daemon._transport_queues["ble"].qsize() == 2
+    assert daemon._transport_queues["ble"].qsize() == 0
 
 
 @pytest.mark.asyncio
-async def test_dismiss_unknown_is_safe():
-    daemon = ClawdDaemon()
-    await daemon._handle_message({"event": "dismiss", "session_id": "nope"})
-    assert daemon._transport_queues["ble"].qsize() == 1
-
-
-# --- Edge cases ---
-
-@pytest.mark.asyncio
-async def test_duplicate_add_updates_not_duplicates():
-    """Adding the same session_id twice must update the entry, not create two."""
+async def test_stop_add_still_drives_idle_state_without_a_card():
+    """A Stop 'add' must transition the session to idle (so Clawd returns to
+    idle) while creating no banner card."""
     daemon = ClawdDaemon()
     await daemon._handle_message(
-        {"event": "add", "session_id": "s1", "project": "p", "message": "first"}
+        {"event": "session_start", "session_id": "s1", "project": "p"}
     )
     await daemon._handle_message(
-        {"event": "add", "session_id": "s1", "project": "p", "message": "updated"}
+        {
+            "event": "add", "hook": "Stop", "session_id": "s1",
+            "project": "p", "message": "Waiting for input",
+        }
     )
-    assert len(daemon._active_notifications) == 1
-    assert daemon._active_notifications["s1"]["message"] == "updated"
-    # Both adds go to the queue for BLE delivery
-    assert daemon._transport_queues["ble"].qsize() == 2
+    assert daemon._session_states["s1"]["state"] == "idle"
+    assert "s1" not in daemon._active_notifications
+    assert daemon._transport_queues["ble"].qsize() == 0
 
 
 @pytest.mark.asyncio
-async def test_empty_session_id_add_and_dismiss():
-    """Empty-string session_id must be tracked and dismissable."""
-    daemon = ClawdDaemon()
-    await daemon._handle_message(
-        {"event": "add", "session_id": "", "project": "p", "message": "m"}
-    )
-    assert "" in daemon._active_notifications
-
-    await daemon._handle_message({"event": "dismiss", "session_id": ""})
-    assert "" not in daemon._active_notifications
-
-
-@pytest.mark.asyncio
-async def test_multiple_sessions_independent():
-    """Multiple independent session IDs must not interfere with each other."""
-    daemon = ClawdDaemon()
-    for sid in ("s1", "s2", "s3"):
-        await daemon._handle_message(
-            {"event": "add", "session_id": sid, "project": "p", "message": "m"}
-        )
-    assert len(daemon._active_notifications) == 3
-
-    await daemon._handle_message({"event": "dismiss", "session_id": "s2"})
-    assert len(daemon._active_notifications) == 2
-    assert "s1" in daemon._active_notifications
-    assert "s2" not in daemon._active_notifications
-    assert "s3" in daemon._active_notifications
-
-
-@pytest.mark.asyncio
-async def test_unknown_event_does_not_crash_sender():
-    """An unknown event in the queue must be logged and skipped, not crash _transport_sender."""
+async def test_unknown_event_does_not_crash_handler():
+    """An unknown event must be tolerated by _handle_message (it is just not a
+    card and not a recognized state transition)."""
     daemon = ClawdDaemon()
     await daemon._handle_message({"event": "bogus", "session_id": "x"})
     await daemon._handle_message({"event": "dismiss", "session_id": "x"})
@@ -103,7 +73,7 @@ async def test_unknown_event_does_not_crash_sender():
     with pytest.raises(ValueError):
         daemon_message_to_ble_payload({"event": "bogus"})
 
-    assert daemon._transport_queues["ble"].qsize() == 2
+    assert daemon._transport_queues["ble"].qsize() == 0
 
 
 @pytest.mark.asyncio
@@ -397,13 +367,14 @@ async def test_reconnect_continues_when_one_transport_fails():
 # --- Multi-transport ---
 
 @pytest.mark.asyncio
-async def test_handle_message_broadcasts_to_all_transport_queues():
-    """When sim is enabled, messages go to all transport queues."""
+async def test_handle_message_enqueues_no_cards():
+    """With banner cards disabled, an add event enqueues nothing on any transport
+    queue (the device is driven by the display-state broadcast instead)."""
     daemon = ClawdDaemon(sim_port=19872)
     msg = {"event": "add", "session_id": "s1", "project": "p", "message": "m"}
     await daemon._handle_message(msg)
     for q in daemon._transport_queues.values():
-        assert q.qsize() == 1
+        assert q.qsize() == 0
 
 
 @pytest.mark.asyncio
@@ -674,8 +645,9 @@ async def test_shutdown_cancels_dynamically_added_transport():
 
 
 @pytest.mark.asyncio
-async def test_handle_message_broadcasts_to_dynamically_added_transport():
-    """Messages broadcast to transports added via add_transport."""
+async def test_dynamically_added_transport_receives_display_state_not_cards():
+    """A transport added via add_transport is driven by the display-state
+    broadcast (a direct write), not by enqueued banner cards."""
     daemon = ClawdDaemon()
 
     mock_transport = AsyncMock()
@@ -686,10 +658,13 @@ async def test_handle_message_broadcasts_to_dynamically_added_transport():
     await daemon.add_transport("sim", mock_transport)
 
     await daemon._handle_message(
-        {"event": "add", "session_id": "s1", "project": "p", "message": "m"}
+        {"event": "session_start", "session_id": "s1", "project": "p"}
     )
 
-    assert daemon._transport_queues["sim"].qsize() == 1
+    # No banner card was enqueued...
+    assert daemon._transport_queues["sim"].qsize() == 0
+    # ...but the new session's display state was pushed directly to the transport.
+    assert mock_transport.write_notification.await_count >= 1
 
     # Clean up
     daemon._running = False

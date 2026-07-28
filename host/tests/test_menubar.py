@@ -24,8 +24,10 @@ class FakeObserver:
 
 
 @pytest.mark.asyncio
-async def test_add_then_dismiss_observer_sequence():
-    """Observer sees correct count sequence: 1, 2, 1, 0."""
+async def test_observer_notification_count_stays_zero():
+    """Banner cards are disabled, so the observer's notification count never rises
+    above 0 — the menu-bar icon stays on its 'connected' (not 'notifications')
+    state regardless of add/dismiss traffic."""
     obs = FakeObserver()
     daemon = ClawdDaemon(observer=obs)
 
@@ -38,7 +40,7 @@ async def test_add_then_dismiss_observer_sequence():
     await daemon._handle_message({"event": "dismiss", "session_id": "s1"})
     await daemon._handle_message({"event": "dismiss", "session_id": "s2"})
 
-    assert obs.notification_changes == [1, 2, 1, 0]
+    assert obs.notification_changes == [0, 0, 0, 0]
 
 
 @pytest.mark.asyncio
