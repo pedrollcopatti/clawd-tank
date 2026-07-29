@@ -43,6 +43,10 @@ PID_DEDUP_FRESHNESS_SECONDS = 60.0
 # rebuilding the UI once per event would thrash the main thread. 150 ms is below
 # the perceptual threshold and collapses a burst into one rebuild.
 NOTIFY_COALESCE_SECS = 0.15
+# How often to sweep for the things that rot without announcing it: sessions
+# whose Claude Code process has exited, and a hook socket that is no longer
+# reachable by path.
+LIVENESS_INTERVAL_SECONDS = 30.0
 
 
 def build_session_snapshot(
@@ -150,8 +154,11 @@ class ClawdDaemon:
         observer: Optional["DaemonObserver"] = None,
         headless: bool = True,
         sessions_path: Optional[Path] = None,
+        socket_path: Optional[Path] = None,
     ):
-        self._socket = SocketServer(on_message=self._handle_message)
+        self._socket = SocketServer(
+            on_message=self._handle_message, socket_path=socket_path
+        )
         self._running = True
         self._shutdown_event = asyncio.Event()
         self._lock_fd: int | None = None
@@ -498,9 +505,20 @@ class ClawdDaemon:
         return dead
 
     async def _liveness_checker(self) -> None:
-        """Async task: every 30s, evict sessions whose Claude Code PID is gone."""
+        """Async task: every 30s, check the things that rot without saying so.
+
+        Sessions whose Claude Code PID is gone get evicted, and the socket is
+        checked for still being reachable by path — riding the existing timer
+        rather than adding a second one, since neither check needs its own.
+        """
         while self._running:
-            await asyncio.sleep(30)
+            await asyncio.sleep(LIVENESS_INTERVAL_SECONDS)
+            try:
+                await self._socket.ensure_serving()
+            except Exception:
+                # Never let a rebind failure take the eviction loop with it:
+                # the next tick tries again 30s later.
+                logger.exception("Could not re-establish the hook socket")
             evicted = self._check_liveness()
             if evicted:
                 self._notify_sessions_changed()

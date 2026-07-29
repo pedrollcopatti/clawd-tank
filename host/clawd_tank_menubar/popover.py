@@ -121,6 +121,20 @@ class SessionPopoverController:
     def is_shown(self) -> bool:
         return bool(self._popover.isShown())
 
+    def set_snapshot(self, snapshot: list[dict]) -> None:
+        """Take the latest snapshot, rebuilding views only if anyone is looking.
+
+        Storing it is not optional while closed: show() renders from this copy,
+        so a popover that skips updates it isn't displaying opens onto whatever
+        was on screen last time. That is how a session evicted at 18:08 was
+        still sitting there the next afternoon, idle, its dead PID behind the
+        row — the daemon had long since said it was gone.
+        """
+        if self.is_shown:
+            self.reload(snapshot)
+        else:
+            self._snapshot = list(snapshot)
+
     def reload(self, snapshot: list[dict]) -> None:
         """Rebuild the content from a session snapshot. Main thread only."""
         self._snapshot = list(snapshot)

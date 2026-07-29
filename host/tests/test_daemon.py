@@ -5,9 +5,11 @@ snapshot by test_session_snapshot.py, and the socket by test_socket_server.py.
 """
 
 import asyncio
+import contextlib
 
 import pytest
 
+from clawd_tank_daemon import daemon as daemon_module
 from clawd_tank_daemon.daemon import ClawdDaemon
 
 
@@ -121,3 +123,48 @@ async def test_shutdown_cancels_a_pending_snapshot_push():
 async def test_shutdown_without_background_tasks_does_not_raise():
     """_shutdown() runs on the quit path even if run() never started."""
     await ClawdDaemon()._shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_of_an_unstarted_daemon_spares_a_running_one():
+    """Building a daemon and shutting it down must not disarm the live app.
+
+    This is the test that was missing: `pytest` once left the installed menu bar
+    deaf for a day, because a daemon that never started still unlinked the
+    socket the running one was serving on. Nothing crashed and nothing logged —
+    hooks simply stopped arriving.
+    """
+    live = ClawdDaemon()
+    await live._socket.start()
+    try:
+        await ClawdDaemon()._shutdown()
+        assert live._socket.is_serving()
+    finally:
+        await live._socket.stop()
+
+
+@pytest.mark.asyncio
+async def test_liveness_loop_restores_a_deleted_socket(monkeypatch):
+    """The periodic sweep is what brings a vanished socket back."""
+    monkeypatch.setattr(daemon_module, "LIVENESS_INTERVAL_SECONDS", 0.01)
+    daemon = ClawdDaemon()
+    await daemon._socket.start()
+    socket_path = daemon._socket._socket_path
+    try:
+        socket_path.unlink()
+        assert not daemon._socket.is_serving()
+
+        task = asyncio.create_task(daemon._liveness_checker())
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if daemon._socket.is_serving():
+                break
+        daemon._running = False
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        assert daemon._socket.is_serving()
+        assert socket_path.exists()
+    finally:
+        await daemon._socket.stop()

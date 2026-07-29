@@ -4,7 +4,7 @@
 
 macOS menu bar app. Claude Code hooks report session activity over a Unix
 socket to an in-process daemon, which drives a status bar icon and a popover
-listing every live session. 328 Python tests pass.
+listing every live session. 406 Python tests pass.
 
 The ESP32 device, its firmware, the SDL2 simulator and the BLE transport were
 removed — the menu bar is the whole product now. Git history has the hardware
@@ -53,6 +53,27 @@ era if you need it.
   hooks are never touched, and Clawd's own stale groups are pruned.
 - [x] Auto-update on app launch when the installed version is outdated.
 
+## Reliability — Complete
+
+- [x] **The socket is verified, not assumed.** `SocketServer` remembers the
+  `(st_dev, st_ino)` of the socket file it created. `stop()` unlinks only that
+  file, and the 30 s liveness tick rebinds if it has gone missing — leaving a
+  file that someone else is actively listening on alone, since a takeover isn't
+  a fault. Losing the file is the app's worst failure mode: the daemon keeps its
+  listening fd and looks perfectly healthy from the inside while every hook gets
+  ENOENT and the menu bar quietly stops knowing anything.
+- [x] **Tests never write to `~/.clawd-tank/`.** conftest redirects the sessions
+  file, socket, PID file and lock into a temp dir. Running `pytest` used to
+  unlink the live app's socket — via a daemon that had never started, whose
+  `stop()` deleted the path anyway — and the menu bar stayed deaf for a day.
+- [x] **A closed popover keeps its snapshot current.** It renders from its own
+  copy on open, and updates that arrived while it was closed used to be
+  dropped — so it opened onto whatever was on screen last time. Rebuilding
+  views nobody is looking at is still skipped; only the data is handed over.
+- [x] **Log file pinned to UTF-8.** The bundle's locale left the stream ASCII,
+  so `logging` silently dropped every record naming a project like "gestão".
+  The log read as though the daemon had never received those events.
+
 ---
 
 ## Ideas / not scheduled
@@ -61,8 +82,6 @@ era if you need it.
   ambient signal when you're not looking at the menu bar. `osascript -e 'display
   notification'` works in an unsigned bundle; `UNUserNotificationCenter` would
   need signing. Would sit behind a toggle next to Alert Sounds.
-- **Click a session row to focus its terminal** — needs a way to map a session
-  back to its window; the PID is already tracked.
 - **Per-session mute** — silence alerts from one noisy project.
 - **Animated status bar icon** — deliberately not done: a 2 Hz timer redrawing
   the status item defeats App Nap and costs battery for information you already

@@ -69,6 +69,38 @@ async def test_snapshot_carries_what_a_row_needs(fast_coalesce):
     assert row["subagents"] == 0
 
 
+class FakePopover:
+    """Stands in for the AppKit popover — _apply_snapshot only needs these two."""
+    def __init__(self, is_shown: bool):
+        self.is_shown = is_shown
+        self.taken = None
+
+    def set_snapshot(self, snapshot: list[dict]) -> None:
+        self.taken = snapshot
+
+
+@pytest.mark.parametrize("is_shown", [True, False])
+def test_every_snapshot_reaches_the_popover(is_shown):
+    """Open or closed, the popover gets told — it renders from its own copy.
+
+    Skipping the handoff while closed left it showing whatever was on screen
+    the last time it was open, for as long as nobody opened it again.
+    """
+    from types import SimpleNamespace
+    from clawd_tank_menubar.app import ClawdTankApp
+
+    popover = FakePopover(is_shown)
+    app = SimpleNamespace(
+        _popover=popover, _sessions=None, _update_status_item=lambda: None,
+    )
+    snapshot = [{"session_id": "s1", "project": "p1"}]
+
+    ClawdTankApp._apply_snapshot(app, snapshot)
+
+    assert popover.taken == snapshot
+    assert app._sessions == snapshot
+
+
 def test_launchd_is_enabled_checks_plist():
     """launchd.is_enabled returns True iff the plist file exists."""
     from clawd_tank_menubar import launchd

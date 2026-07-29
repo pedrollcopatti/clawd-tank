@@ -170,10 +170,11 @@ class ClawdTankApp(rumps.App, DaemonObserver):
         """Main thread. Store the snapshot and refresh what it drives."""
         self._sessions = snapshot
         self._update_status_item()
-        # Rebuilding views for a popover nobody is looking at is wasted work;
-        # show() reloads from the stored snapshot anyway.
-        if self._popover is not None and self._popover.is_shown:
-            self._popover.reload(snapshot)
+        # Handed over even when closed. Rebuilding views nobody is looking at
+        # is wasted work — set_snapshot() skips that — but the popover renders
+        # from its own copy when it opens, so the copy has to keep up.
+        if self._popover is not None:
+            self._popover.set_snapshot(snapshot)
 
     # --- Status item ---
 
@@ -266,7 +267,12 @@ def main():
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler(log_dir / "clawd-tank.log"),
+            # Encoding pinned rather than inherited: inside the bundle the
+            # locale leaves the stream ASCII, and logging drops a record it
+            # can't encode without raising. Every line about a project whose
+            # name isn't ASCII — "gestão" — vanished, leaving a log that looked
+            # like the daemon had never heard the event at all.
+            logging.FileHandler(log_dir / "clawd-tank.log", encoding="utf-8"),
         ],
     )
     logger.info("Clawd Tank %s starting", get_version())

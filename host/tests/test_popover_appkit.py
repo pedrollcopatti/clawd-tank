@@ -96,6 +96,29 @@ def test_tick_updates_elapsed_without_rebuilding_rows(controller):
     assert controller._rows[0] is row
 
 
+def test_set_snapshot_while_closed_does_not_rebuild_views(controller):
+    controller.reload([session()])
+    rows = controller._rows
+
+    controller.set_snapshot([])
+
+    assert controller._rows is rows  # nobody is looking; nothing to redraw
+
+
+def test_what_show_renders_is_the_snapshot_that_arrived_while_closed(controller):
+    """The popover opens onto current state, not the last state it displayed.
+
+    Updates that land while it is closed used to be dropped, so a session
+    evicted overnight was still listed, idle, the next afternoon.
+    """
+    controller.reload([session(session_id="s1")])
+
+    controller.set_snapshot([])
+    controller.reload(controller._snapshot)  # what show() does on open
+
+    assert controller._rows == []
+
+
 def test_rows_with_a_pid_are_clickable(controller):
     controller.reload([session(pid=4242)])
     assert controller._rows[0].view._on_click is not None
